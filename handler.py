@@ -91,6 +91,9 @@ class EndpointHandler:
         # ACE-Step dynamic config imports layer_type_validation from transformers.
         # Some endpoint base images ship a transformers build without this helper.
         self._patch_transformers_layer_validation()
+        # Some CUDA/torch combinations used by managed endpoint images don't support
+        # sorting bool tensors on CUDA. ACE-Step/Transformers paths can hit this.
+        self._patch_torch_sort_bool_cuda()
 
         try:
             from acestep.handler import AceStepHandler
@@ -158,6 +161,30 @@ class EndpointHandler:
                 raise ValueError("`layer_types` length must match `num_hidden_layers`")
 
         cu.layer_type_validation = _fallback_layer_type_validation
+
+    @staticmethod
+    def _patch_torch_sort_bool_cuda() -> None:
+        if torch is None or not hasattr(torch, "sort"):
+            return
+        if getattr(torch.sort, "__name__", "") == "_sort_bool_cuda_compat":
+            return
+
+        _orig_sort = torch.sort
+
+        def _sort_bool_cuda_compat(input_tensor, *args, **kwargs):
+            if (
+                isinstance(input_tensor, torch.Tensor)
+                and input_tensor.is_cuda
+                and input_tensor.dtype == torch.bool
+            ):
+                out = _orig_sort(input_tensor.to(torch.uint8), *args, **kwargs)
+                values = out.values.to(torch.bool) if hasattr(out, "values") else out[0].to(torch.bool)
+                indices = out.indices if hasattr(out, "indices") else out[1]
+                return values, indices
+            return _orig_sort(input_tensor, *args, **kwargs)
+
+        _sort_bool_cuda_compat.__name__ = "_sort_bool_cuda_compat"
+        torch.sort = _sort_bool_cuda_compat
 
     def _ensure_llm_initialized(self) -> bool:
         if self.llm_handler is None:
