@@ -2,7 +2,13 @@ numpy
 soundfile
 torch
 torchaudio
-transformers
+transformers>=4.51.0,<4.58.0
 accelerate
 huggingface_hub
-git+https://github.com/ace-step/ACE-Step-1.5.git@f30aee4c186c33b7b8a6ea59a4b7fc36f795b49f
+diffusers
+loguru
+tqdm
+numba>=0.63.1
+PyYAML
+modelscope
+filelock>=3.13.0

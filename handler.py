@@ -1,15 +1,13 @@
 # handler.py
 import base64
-import inspect
 import io
 import os
 import traceback
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import soundfile as sf
 
-# Optional torch import for dtype/device handling
 try:
     import torch
 except Exception:
@@ -20,7 +18,7 @@ class EndpointHandler:
     """
     Hugging Face Inference Endpoints custom handler for ACE-Step 1.5.
 
-    Request body shape:
+    Supported request shapes:
     {
       "inputs": {
         "prompt": "upbeat pop rap, emotional guitar",
@@ -29,130 +27,144 @@ class EndpointHandler:
         "sample_rate": 44100,
         "seed": 42,
         "guidance_scale": 7.0,
-        "steps": 50,
+        "steps": 8,
         "use_lm": true,
         "simple_prompt": false,
-        "model_repo": "ACE-Step/Ace-Step1.5"
+        "instrumental": false,
+        "allow_fallback": false
       }
     }
 
-    Also supported for simple mode:
+    Or simple mode:
     {
       "inputs": "upbeat pop rap with emotional guitar"
     }
 
-    Response:
-    {
-      "audio_base64_wav": "...",
-      "sample_rate": 44100,
-      "duration_sec": 12,
-      "used_fallback": false,
-      "model_loaded": true,
-      "model_error": null,
-      "meta": {...}
-    }
+    Notes:
+    - This handler uses ACE-Step's official Python API internally.
+    - Fallback sine generation is disabled by default so model failures are explicit.
     """
 
     def __init__(self, path: str = ""):
         self.path = path
-        self.model = None
-        self.model_error = None
-        self.model_repo = os.getenv("ACE_MODEL_REPO", "ACE-Step/Ace-Step1.5")
-        self.default_sr = int(os.getenv("DEFAULT_SAMPLE_RATE", "44100"))
+        self.project_root = os.path.dirname(os.path.abspath(__file__))
 
-        # Runtime knobs
+        self.model_repo = os.getenv("ACE_MODEL_REPO", "ACE-Step/Ace-Step1.5")
+        self.config_path = os.getenv("ACE_CONFIG_PATH", "acestep-v15-turbo")
+        self.lm_model_path = os.getenv("ACE_LM_MODEL_PATH", "acestep-5Hz-lm-1.7B")
+        self.lm_backend = os.getenv("ACE_LM_BACKEND", "pt")
+        self.download_source = os.getenv("ACE_DOWNLOAD_SOURCE", "huggingface")
+
+        self.default_sr = int(os.getenv("DEFAULT_SAMPLE_RATE", "44100"))
+        self.enable_fallback = self._to_bool(os.getenv("ACE_ENABLE_FALLBACK"), False)
+        self.init_lm_on_start = self._to_bool(os.getenv("ACE_INIT_LLM"), False)
+        self.skip_init = self._to_bool(os.getenv("ACE_SKIP_INIT"), False)
+
         self.device = "cuda" if (torch is not None and torch.cuda.is_available()) else "cpu"
         self.dtype = "float16" if self.device == "cuda" else "float32"
 
-        # Try to initialize ACE-Step pipeline from repo code paths.
-        # Repo mentions Python API and module path `acestep.acestep_v15_pipeline`.
-        self._init_model()
+        self.model_loaded = False
+        self.model_error: Optional[str] = None
+        self.init_details: Dict[str, Any] = {}
+
+        self.dit_handler = None
+        self.llm_handler = None
+        self.llm_initialized = False
+        self.llm_error: Optional[str] = None
+
+        self._GenerationParams = None
+        self._GenerationConfig = None
+        self._generate_music = None
+        self._create_sample = None
+
+        if self.skip_init:
+            self.model_error = "Initialization skipped because ACE_SKIP_INIT=true"
+        else:
+            self._init_model()
 
     # --------------------------
-    # Initialization helpers
+    # Initialization
     # --------------------------
     def _init_model(self) -> None:
         err_msgs = []
 
-        # Strategy A: class/factory in acestep.acestep_v15_pipeline
         try:
-            from acestep import acestep_v15_pipeline as m  # type: ignore
-
-            # Try common factory patterns
-            if hasattr(m, "from_pretrained"):
-                self.model = m.from_pretrained(self.model_repo)  # type: ignore
-            elif hasattr(m, "AceStepV15Pipeline"):
-                cls = getattr(m, "AceStepV15Pipeline")
-                if hasattr(cls, "from_pretrained"):
-                    self.model = cls.from_pretrained(self.model_repo)
-                else:
-                    self.model = cls(model_path=self.model_repo)
-            elif hasattr(m, "Pipeline"):
-                cls = getattr(m, "Pipeline")
-                if hasattr(cls, "from_pretrained"):
-                    self.model = cls.from_pretrained(self.model_repo)
-                else:
-                    self.model = cls(self.model_repo)
-            else:
-                raise RuntimeError("No known pipeline class/factory found in acestep_v15_pipeline")
-
-            # Move device if supported
-            if self.model is not None and hasattr(self.model, "to"):
-                try:
-                    self.model.to(self.device)
-                except Exception:
-                    pass
-
-            return
+            from acestep.handler import AceStepHandler
+            from acestep.inference import GenerationConfig, GenerationParams, create_sample, generate_music
+            from acestep.llm_inference import LLMHandler
         except Exception as e:
-            err_msgs.append(f"Strategy A failed: {type(e).__name__}: {e}")
+            self.model_error = f"ACE-Step import failed: {type(e).__name__}: {e}"
+            return
 
-        # Strategy B: import root `acestep` and find a likely pipeline symbol
+        self._GenerationParams = GenerationParams
+        self._GenerationConfig = GenerationConfig
+        self._generate_music = generate_music
+        self._create_sample = create_sample
+
         try:
-            import acestep  # type: ignore
-
-            candidates = [
-                "AceStepV15Pipeline",
-                "AceStepPipeline",
-                "Pipeline",
-                "create_pipeline",
-                "build_pipeline",
-                "load_pipeline",
-            ]
-
-            obj = None
-            for name in candidates:
-                if hasattr(acestep, name):
-                    obj = getattr(acestep, name)
-                    break
-
-            if obj is None:
-                raise RuntimeError("No known pipeline symbol found in `acestep` package")
-
-            if callable(obj):
-                # class or factory
-                if hasattr(obj, "from_pretrained"):
-                    self.model = obj.from_pretrained(self.model_repo)
-                else:
-                    # try keyword variants
-                    try:
-                        self.model = obj(model_path=self.model_repo)
-                    except TypeError:
-                        self.model = obj(self.model_repo)
-            else:
-                self.model = obj
-
-            if self.model is not None and hasattr(self.model, "to"):
-                try:
-                    self.model.to(self.device)
-                except Exception:
-                    pass
-            return
+            self.dit_handler = AceStepHandler()
+            prefer_source = self.download_source if self.download_source in {"huggingface", "modelscope"} else None
+            init_status, ok = self.dit_handler.initialize_service(
+                project_root=self.project_root,
+                config_path=self.config_path,
+                device=self.device,
+                use_flash_attention=False,
+                compile_model=False,
+                offload_to_cpu=False,
+                offload_dit_to_cpu=False,
+                prefer_source=prefer_source,
+            )
+            self.init_details["dit_status"] = init_status
+            if not ok:
+                raise RuntimeError(init_status)
         except Exception as e:
-            err_msgs.append(f"Strategy B failed: {type(e).__name__}: {e}")
+            err_msgs.append(f"DiT init failed: {type(e).__name__}: {e}")
 
-        self.model = None
-        self.model_error = " | ".join(err_msgs)
+        try:
+            self.llm_handler = LLMHandler()
+            if self.init_lm_on_start:
+                self._ensure_llm_initialized()
+        except Exception as e:
+            err_msgs.append(f"LLM bootstrap failed: {type(e).__name__}: {e}")
+
+        if err_msgs:
+            self.model_loaded = False
+            self.model_error = " | ".join(err_msgs)
+            return
+
+        self.model_loaded = True
+        self.model_error = None
+
+    def _ensure_llm_initialized(self) -> bool:
+        if self.llm_handler is None:
+            self.llm_error = "LLM handler is not available"
+            return False
+
+        if self.llm_initialized:
+            return True
+
+        try:
+            checkpoint_dir = os.path.join(self.project_root, "checkpoints")
+            status, ok = self.llm_handler.initialize(
+                checkpoint_dir=checkpoint_dir,
+                lm_model_path=self.lm_model_path,
+                backend=self.lm_backend,
+                device=self.device,
+                offload_to_cpu=False,
+            )
+            self.init_details["llm_status"] = status
+            if not ok:
+                self.llm_error = status
+                self.llm_initialized = False
+                return False
+
+            self.llm_error = None
+            self.llm_initialized = True
+            return True
+        except Exception as e:
+            self.llm_error = f"LLM init exception: {type(e).__name__}: {e}"
+            self.llm_initialized = False
+            return False
 
     # --------------------------
     # Audio helpers
@@ -166,7 +178,6 @@ class EndpointHandler:
         else:
             arr = np.asarray(audio)
 
-        # Convert common tensor shape [channels, samples] to [samples, channels].
         if arr.ndim == 2 and arr.shape[0] in (1, 2) and arr.shape[1] > arr.shape[0]:
             arr = arr.T
 
@@ -188,6 +199,9 @@ class EndpointHandler:
         y = (0.07 * np.sin(2 * np.pi * 440 * t) + 0.01 * rng.standard_normal(len(t))).astype(np.float32)
         return np.clip(y, -1.0, 1.0)
 
+    # --------------------------
+    # Request normalization
+    # --------------------------
     @staticmethod
     def _to_bool(value: Any, default: bool = False) -> bool:
         if value is None:
@@ -242,39 +256,18 @@ class EndpointHandler:
         if not lyrics and (instrumental or simple_prompt):
             lyrics = "[Instrumental]"
 
-        duration_sec = self._to_int(raw_inputs.get("duration_sec", raw_inputs.get("duration", 10)), 10)
-        duration_sec = max(1, min(duration_sec, 600))
+        duration_sec = self._to_int(raw_inputs.get("duration_sec", raw_inputs.get("duration", 12)), 12)
+        duration_sec = max(10, min(duration_sec, 600))
 
         sample_rate = self._to_int(raw_inputs.get("sample_rate", self.default_sr), self.default_sr)
         sample_rate = max(8000, min(sample_rate, 48000))
 
         seed = self._to_int(raw_inputs.get("seed", 42), 42)
         guidance_scale = self._to_float(raw_inputs.get("guidance_scale", 7.0), 7.0)
-        steps = self._to_int(raw_inputs.get("steps", raw_inputs.get("inference_steps", 50)), 50)
-        steps = max(1, min(steps, 500))
+        steps = self._to_int(raw_inputs.get("steps", raw_inputs.get("inference_steps", 8)), 8)
+        steps = max(1, min(steps, 200))
         use_lm = self._to_bool(raw_inputs.get("use_lm", raw_inputs.get("thinking", True)), True)
-        task_type = self._pick_text(raw_inputs, "task_type") or "text2music"
-
-        model_repo = raw_inputs.get("model_repo")
-
-        model_kwargs = {
-            "task_type": task_type,
-            "prompt": prompt,
-            "caption": prompt,
-            "query": prompt,
-            "lyrics": lyrics,
-            "duration_sec": duration_sec,
-            "duration": duration_sec,
-            "sample_rate": sample_rate,
-            "seed": seed,
-            "guidance_scale": guidance_scale,
-            "steps": steps,
-            "inference_steps": steps,
-            "num_inference_steps": steps,
-            "use_lm": use_lm,
-            "thinking": use_lm,
-            "instrumental": instrumental,
-        }
+        allow_fallback = self._to_bool(raw_inputs.get("allow_fallback"), self.enable_fallback)
 
         return {
             "prompt": prompt,
@@ -287,165 +280,144 @@ class EndpointHandler:
             "use_lm": use_lm,
             "instrumental": instrumental,
             "simple_prompt": simple_prompt,
-            "model_repo": model_repo,
-            "model_kwargs": model_kwargs,
+            "allow_fallback": allow_fallback,
         }
 
-    @staticmethod
-    def _invoke_with_supported_kwargs(fn: Any, kwargs: Dict[str, Any]) -> Any:
-        try:
-            sig = inspect.signature(fn)
-            has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-            if has_var_kw:
-                return fn(**kwargs)
-            accepted = {
-                name
-                for name, p in sig.parameters.items()
-                if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-            }
-            filtered = {k: v for k, v in kwargs.items() if k in accepted}
-            return fn(**filtered)
-        except Exception:
-            # Fallback for C-extension callables or dynamic signatures.
-            return fn(**kwargs)
-
-    def _normalize_model_output(self, out: Any, default_sr: int) -> Tuple[np.ndarray, int]:
-        if out is None:
-            raise RuntimeError("Model returned None")
-
-        if hasattr(out, "success") and not getattr(out, "success"):
-            err = getattr(out, "error", "unknown model error")
-            raise RuntimeError(str(err))
-
-        if hasattr(out, "audios"):
-            audios = getattr(out, "audios") or []
-            if not audios:
-                raise RuntimeError("Model result has no audios")
-            first = audios[0]
-            if isinstance(first, dict):
-                audio = first.get("tensor", first.get("audio", first.get("waveform", first.get("wav"))))
-                sr = first.get("sample_rate", default_sr)
-            else:
-                audio = getattr(first, "tensor", getattr(first, "audio", None))
-                sr = getattr(first, "sample_rate", default_sr)
-            if audio is None:
-                raise RuntimeError("Model result audio entry is missing tensor/audio")
-            return self._as_float32(audio), int(sr)
-
-        if isinstance(out, tuple) and len(out) >= 1:
-            audio = out[0]
-            sr = int(out[1]) if len(out) > 1 and out[1] is not None else default_sr
-            return self._as_float32(audio), sr
-
-        if isinstance(out, dict):
-            if "audios" in out:
-                audios = out.get("audios") or []
-                if not audios:
-                    raise RuntimeError("Model output `audios` is empty")
-                first = audios[0]
-                if not isinstance(first, dict):
-                    raise RuntimeError("Model output `audios[0]` must be a dict")
-                audio = first.get("tensor", first.get("audio", first.get("waveform", first.get("wav"))))
-                sr = first.get("sample_rate", default_sr)
-                if audio is None:
-                    raise RuntimeError("Model output `audios[0]` missing tensor/audio")
-                return self._as_float32(audio), int(sr)
-
-            audio = out.get("audio", out.get("waveform", out.get("wav", out.get("tensor"))))
-            sr = out.get("sample_rate", out.get("sr", default_sr))
-            if audio is None:
-                raise RuntimeError("Model dict output missing audio/waveform field")
-            return self._as_float32(audio), int(sr)
-
-        for name in ("audio", "waveform", "wav", "tensor"):
-            if hasattr(out, name):
-                audio = getattr(out, name)
-                if audio is not None:
-                    sr = getattr(out, "sample_rate", getattr(out, "sr", default_sr))
-                    return self._as_float32(audio), int(sr)
-
-        return self._as_float32(out), default_sr
-
     # --------------------------
-    # Inference
+    # ACE-Step invocation
     # --------------------------
-    def _call_model(
-        self,
-        model_kwargs: Dict[str, Any],
-        sample_rate: int,
-    ) -> Tuple[np.ndarray, int]:
-        """
-        Tries multiple invocation styles to tolerate minor ACE-Step API differences.
-        Returns (audio_np, sample_rate).
-        """
-        if self.model is None:
-            raise RuntimeError("Model is not loaded")
+    def _build_generation_inputs(self, req: Dict[str, Any], llm_ready: bool) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        caption = req["prompt"]
+        lyrics = req["lyrics"]
 
-        # Common callable entrypoints
-        methods = [
-            "__call__",
-            "generate",
-            "infer",
-            "inference",
-            "text_to_music",
-            "run",
-        ]
+        extras: Dict[str, Any] = {
+            "simple_expansion_used": False,
+            "simple_expansion_error": None,
+        }
 
-        last_err = None
-        for m in methods:
+        bpm = None
+        keyscale = ""
+        timesignature = ""
+        vocal_language = "unknown"
+        duration = float(req["duration_sec"])
+
+        if req["simple_prompt"] and req["use_lm"] and llm_ready and caption:
             try:
-                fn = self.model if m == "__call__" else getattr(self.model, m, None)
-                if fn is None:
-                    continue
-
-                # Try full kwargs
-                try:
-                    out = self._invoke_with_supported_kwargs(fn, model_kwargs)
-                except TypeError:
-                    # Narrow payload if signature is strict
-                    skinny = {
-                        "prompt": model_kwargs.get("prompt"),
-                        "caption": model_kwargs.get("caption"),
-                        "lyrics": model_kwargs.get("lyrics"),
-                        "duration": model_kwargs.get("duration"),
-                        "seed": model_kwargs.get("seed"),
-                    }
-                    skinny = {k: v for k, v in skinny.items() if v is not None and (k != "prompt" or str(v).strip())}
-                    out = self._invoke_with_supported_kwargs(fn, skinny)
-
-                return self._normalize_model_output(out, sample_rate)
-
+                sample = self._create_sample(
+                    llm_handler=self.llm_handler,
+                    query=caption,
+                    instrumental=req["instrumental"],
+                )
+                if getattr(sample, "success", False):
+                    caption = getattr(sample, "caption", "") or caption
+                    lyrics = getattr(sample, "lyrics", "") or lyrics
+                    bpm = getattr(sample, "bpm", None)
+                    keyscale = getattr(sample, "keyscale", "") or ""
+                    timesignature = getattr(sample, "timesignature", "") or ""
+                    vocal_language = getattr(sample, "language", "") or "unknown"
+                    sample_duration = getattr(sample, "duration", None)
+                    if sample_duration:
+                        duration = float(sample_duration)
+                    extras["simple_expansion_used"] = True
+                else:
+                    extras["simple_expansion_error"] = getattr(sample, "error", "create_sample failed")
             except Exception as e:
-                last_err = e
-                continue
+                extras["simple_expansion_error"] = f"{type(e).__name__}: {e}"
 
-        raise RuntimeError(f"No compatible inference method worked: {last_err}")
+        params = self._GenerationParams(
+            task_type="text2music",
+            caption=caption,
+            lyrics=lyrics,
+            instrumental=req["instrumental"],
+            duration=duration,
+            inference_steps=req["steps"],
+            guidance_scale=req["guidance_scale"],
+            seed=req["seed"],
+            bpm=bpm,
+            keyscale=keyscale,
+            timesignature=timesignature,
+            vocal_language=vocal_language,
+            thinking=bool(req["use_lm"] and llm_ready),
+            use_cot_metas=bool(req["use_lm"] and llm_ready),
+            use_cot_caption=bool(req["use_lm"] and llm_ready and not req["simple_prompt"]),
+            use_cot_language=bool(req["use_lm"] and llm_ready),
+        )
 
+        config = self._GenerationConfig(
+            batch_size=1,
+            allow_lm_batch=False,
+            use_random_seed=False,
+            seeds=[req["seed"]],
+            audio_format="wav",
+        )
+
+        extras["resolved_prompt"] = caption
+        extras["resolved_lyrics"] = lyrics
+        extras["resolved_duration"] = duration
+
+        return {"params": params, "config": config}, extras
+
+    def _call_model(self, req: Dict[str, Any]) -> Tuple[np.ndarray, int, Dict[str, Any]]:
+        if not self.model_loaded or self.dit_handler is None:
+            raise RuntimeError(self.model_error or "Model is not loaded")
+
+        llm_ready = False
+        if req["use_lm"]:
+            llm_ready = self._ensure_llm_initialized()
+
+        generation_inputs, extras = self._build_generation_inputs(req, llm_ready)
+
+        result = self._generate_music(
+            self.dit_handler,
+            self.llm_handler if llm_ready else None,
+            generation_inputs["params"],
+            generation_inputs["config"],
+            save_dir=None,
+            progress=None,
+        )
+
+        if not getattr(result, "success", False):
+            raise RuntimeError(getattr(result, "error", "generation failed"))
+
+        audios = getattr(result, "audios", None) or []
+        if not audios:
+            raise RuntimeError("generation succeeded but no audio was returned")
+
+        first = audios[0]
+        audio_tensor = first.get("tensor") if isinstance(first, dict) else None
+        if audio_tensor is None:
+            raise RuntimeError("generated audio tensor is missing")
+
+        sample_rate = int(first.get("sample_rate", req["sample_rate"]))
+        status_message = getattr(result, "status_message", "")
+
+        meta = {
+            "llm_requested": req["use_lm"],
+            "llm_initialized": llm_ready,
+            "llm_error": self.llm_error,
+            "status_message": status_message,
+        }
+        meta.update(extras)
+
+        return self._as_float32(audio_tensor), sample_rate, meta
+
+    # --------------------------
+    # Endpoint entry
+    # --------------------------
     def __call__(self, data: Dict[str, Any]) -> Dict[str, Any]:
         try:
             req = self._normalize_request(data)
 
-            # Optional override
-            model_repo = req.get("model_repo")
-            if model_repo and model_repo != self.model_repo:
-                # hot-switch model only if user asks
-                self.model_repo = str(model_repo)
-                self._init_model()
-
             used_fallback = False
+            runtime_meta: Dict[str, Any] = {}
 
-            if self.model is not None:
-                try:
-                    audio, out_sr = self._call_model(
-                        model_kwargs=req["model_kwargs"],
-                        sample_rate=req["sample_rate"],
-                    )
-                except Exception as e:
-                    used_fallback = True
-                    self.model_error = f"Inference failed: {type(e).__name__}: {e}"
-                    audio = self._fallback_sine(req["duration_sec"], req["sample_rate"], req["seed"])
-                    out_sr = req["sample_rate"]
-            else:
+            try:
+                audio, out_sr, runtime_meta = self._call_model(req)
+            except Exception as model_exc:
+                self.model_error = f"Inference failed: {type(model_exc).__name__}: {model_exc}"
+                if not req["allow_fallback"]:
+                    raise RuntimeError(self.model_error)
+
                 used_fallback = True
                 audio = self._fallback_sine(req["duration_sec"], req["sample_rate"], req["seed"])
                 out_sr = req["sample_rate"]
@@ -455,7 +427,7 @@ class EndpointHandler:
                 "sample_rate": int(out_sr),
                 "duration_sec": int(req["duration_sec"]),
                 "used_fallback": used_fallback,
-                "model_loaded": self.model is not None,
+                "model_loaded": self.model_loaded,
                 "model_repo": self.model_repo,
                 "model_error": self.model_error,
                 "meta": {
@@ -469,16 +441,34 @@ class EndpointHandler:
                     "use_lm": req["use_lm"],
                     "simple_prompt": req["simple_prompt"],
                     "instrumental": req["instrumental"],
-                    "resolved_prompt": req["prompt"],
-                    "resolved_lyrics": req["lyrics"],
+                    "allow_fallback": req["allow_fallback"],
+                    "resolved_prompt": runtime_meta.get("resolved_prompt", req["prompt"]),
+                    "resolved_lyrics": runtime_meta.get("resolved_lyrics", req["lyrics"]),
+                    "simple_expansion_used": runtime_meta.get("simple_expansion_used", False),
+                    "simple_expansion_error": runtime_meta.get("simple_expansion_error"),
+                    "llm_requested": runtime_meta.get("llm_requested", False),
+                    "llm_initialized": runtime_meta.get("llm_initialized", False),
+                    "llm_error": runtime_meta.get("llm_error"),
+                    "status_message": runtime_meta.get("status_message", ""),
+                    "init_details": self.init_details,
                 },
             }
 
         except Exception as e:
             return {
                 "error": f"{type(e).__name__}: {e}",
-                "traceback": traceback.format_exc(limit=3),
+                "traceback": traceback.format_exc(limit=4),
                 "audio_base64_wav": None,
                 "sample_rate": None,
                 "duration_sec": None,
+                "used_fallback": False,
+                "model_loaded": self.model_loaded,
+                "model_repo": self.model_repo,
+                "model_error": self.model_error,
+                "meta": {
+                    "device": self.device,
+                    "dtype": self.dtype,
+                    "init_details": self.init_details,
+                    "llm_error": self.llm_error,
+                },
             }
