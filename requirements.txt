@@ -1,0 +1,7 @@
+numpy
+soundfile
+torch
+torchaudio
+transformers
+accelerate
+huggingface_hub
