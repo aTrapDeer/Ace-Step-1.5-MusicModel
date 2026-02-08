@@ -170,6 +170,9 @@ class EndpointHandler:
             return
 
         _orig_sort = torch.sort
+        _orig_tensor_sort = getattr(torch.Tensor, "sort", None)
+        _orig_argsort = getattr(torch, "argsort", None)
+        _orig_tensor_argsort = getattr(torch.Tensor, "argsort", None)
 
         def _sort_bool_cuda_compat(input_tensor, *args, **kwargs):
             if (
@@ -185,6 +188,40 @@ class EndpointHandler:
 
         _sort_bool_cuda_compat.__name__ = "_sort_bool_cuda_compat"
         torch.sort = _sort_bool_cuda_compat
+
+        if callable(_orig_tensor_sort):
+            def _tensor_sort_bool_cuda_compat(self, *args, **kwargs):
+                if self.is_cuda and self.dtype == torch.bool:
+                    out = _orig_tensor_sort(self.to(torch.uint8), *args, **kwargs)
+                    values = out.values.to(torch.bool) if hasattr(out, "values") else out[0].to(torch.bool)
+                    indices = out.indices if hasattr(out, "indices") else out[1]
+                    return values, indices
+                return _orig_tensor_sort(self, *args, **kwargs)
+
+            _tensor_sort_bool_cuda_compat.__name__ = "_tensor_sort_bool_cuda_compat"
+            torch.Tensor.sort = _tensor_sort_bool_cuda_compat
+
+        if callable(_orig_argsort):
+            def _argsort_bool_cuda_compat(input_tensor, *args, **kwargs):
+                if (
+                    isinstance(input_tensor, torch.Tensor)
+                    and input_tensor.is_cuda
+                    and input_tensor.dtype == torch.bool
+                ):
+                    return _orig_argsort(input_tensor.to(torch.uint8), *args, **kwargs)
+                return _orig_argsort(input_tensor, *args, **kwargs)
+
+            _argsort_bool_cuda_compat.__name__ = "_argsort_bool_cuda_compat"
+            torch.argsort = _argsort_bool_cuda_compat
+
+        if callable(_orig_tensor_argsort):
+            def _tensor_argsort_bool_cuda_compat(self, *args, **kwargs):
+                if self.is_cuda and self.dtype == torch.bool:
+                    return _orig_tensor_argsort(self.to(torch.uint8), *args, **kwargs)
+                return _orig_tensor_argsort(self, *args, **kwargs)
+
+            _tensor_argsort_bool_cuda_compat.__name__ = "_tensor_argsort_bool_cuda_compat"
+            torch.Tensor.argsort = _tensor_argsort_bool_cuda_compat
 
     def _ensure_llm_initialized(self) -> bool:
         if self.llm_handler is None:
