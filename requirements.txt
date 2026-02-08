@@ -6,9 +6,11 @@ transformers>=4.53.0,<4.58.0
 accelerate
 huggingface_hub
 diffusers
+einops
 loguru
 tqdm
 numba>=0.63.1
+vector-quantize-pytorch
 PyYAML
 modelscope
 filelock>=3.13.0
