@@ -88,6 +88,10 @@ class EndpointHandler:
     def _init_model(self) -> None:
         err_msgs = []
 
+        # ACE-Step dynamic config imports layer_type_validation from transformers.
+        # Some endpoint base images ship a transformers build without this helper.
+        self._patch_transformers_layer_validation()
+
         try:
             from acestep.handler import AceStepHandler
             from acestep.inference import GenerationConfig, GenerationParams, create_sample, generate_music
@@ -134,6 +138,26 @@ class EndpointHandler:
 
         self.model_loaded = True
         self.model_error = None
+
+    @staticmethod
+    def _patch_transformers_layer_validation() -> None:
+        try:
+            from transformers import configuration_utils as cu
+        except Exception:
+            return
+
+        if hasattr(cu, "layer_type_validation"):
+            return
+
+        def _fallback_layer_type_validation(layer_types, num_hidden_layers=None):
+            if layer_types is None:
+                return
+            if not isinstance(layer_types, (list, tuple)):
+                raise TypeError("`layer_types` must be a list/tuple")
+            if num_hidden_layers is not None and len(layer_types) != int(num_hidden_layers):
+                raise ValueError("`layer_types` length must match `num_hidden_layers`")
+
+        cu.layer_type_validation = _fallback_layer_type_validation
 
     def _ensure_llm_initialized(self) -> bool:
         if self.llm_handler is None:
