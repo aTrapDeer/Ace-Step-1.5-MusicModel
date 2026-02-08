@@ -5,3 +5,4 @@ torchaudio
 transformers
 accelerate
 huggingface_hub
+git+https://github.com/ace-step/ACE-Step-1.5.git@f30aee4c186c33b7b8a6ea59a4b7fc36f795b49f

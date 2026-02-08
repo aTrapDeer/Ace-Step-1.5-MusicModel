@@ -1,3 +1,4 @@
 .env
 *.bat
 *.ps1
+*.wav
