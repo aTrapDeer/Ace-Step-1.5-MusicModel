@@ -1,6 +1,6 @@
 ---
 title: ACE-Step 1.5 LoRA Studio
-emoji: ??
+emoji: 🎵
 colorFrom: blue
 colorTo: indigo
 sdk: gradio
