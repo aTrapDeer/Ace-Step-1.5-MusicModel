@@ -561,6 +561,7 @@ class LoRATrainer:
         # ---- Pre-encode all audio & text (fits in CPU RAM) ----
         logger.info("Pre-encoding dataset through VAE & text encoder ...")
         dataset: List[Dict[str, Any]] = []
+        failed_encode: List[str] = []
 
         # Freeze VAE and text encoder (they are not trained)
         self.handler.vae.eval()
@@ -608,10 +609,18 @@ class LoRATrainer:
                     }
                 )
             except Exception as exc:
+                reason = f"{Path(entry.audio_path).name}: {exc}"
+                failed_encode.append(reason)
                 logger.warning(f"Skipping {entry.audio_path}: {exc}")
 
         if not dataset:
-            return "All tracks failed to encode. Check audio files."
+            preview = "\n".join(f"- {msg}" for msg in failed_encode[:8]) or "- (no detailed errors captured)"
+            return (
+                "All tracks failed to encode. Check audio files.\n"
+                "First errors:\n"
+                f"{preview}\n"
+                "Tip: try WAV/FLAC files and dataset folder scan instead of temporary uploads."
+            )
 
         logger.info(f"Encoded {len(dataset)}/{num_entries} tracks.")
 
