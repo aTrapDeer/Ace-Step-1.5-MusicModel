@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+checkpoints/
+lora_output/
+*.wav
+*.mp3
+*.flac
