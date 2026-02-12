@@ -1655,7 +1655,7 @@ class AceStepHandler:
             
         try:
             # Load audio file
-            audio, sr = torchaudio.load(audio_file)
+            audio, sr = self._load_audio_any_backend(audio_file)
             
             logger.debug(f"[process_reference_audio] Reference audio shape: {audio.shape}")
             logger.debug(f"[process_reference_audio] Reference audio sample rate: {sr}")
@@ -1710,7 +1710,7 @@ class AceStepHandler:
             
         try:
             # Load audio file
-            audio, sr = torchaudio.load(audio_file)
+            audio, sr = self._load_audio_any_backend(audio_file)
             
             # Normalize to stereo 48kHz
             audio = self._normalize_audio_to_stereo_48k(audio, sr)
@@ -1720,6 +1720,21 @@ class AceStepHandler:
         except Exception as e:
             logger.exception("[process_src_audio] Error processing source audio")
             return None
+
+    def _load_audio_any_backend(self, audio_file):
+        """Load audio with torchaudio first, then soundfile fallback."""
+        try:
+            return torchaudio.load(audio_file)
+        except Exception as torchaudio_exc:
+            try:
+                audio_np, sr = sf.read(audio_file, dtype="float32", always_2d=True)
+                audio = torch.from_numpy(audio_np.T)
+                return audio, sr
+            except Exception as sf_exc:
+                raise RuntimeError(
+                    f"Audio decode failed for '{audio_file}' with torchaudio ({torchaudio_exc}) "
+                    f"and soundfile ({sf_exc})."
+                ) from sf_exc
     
     def convert_src_audio_to_codes(self, audio_file) -> str:
         """

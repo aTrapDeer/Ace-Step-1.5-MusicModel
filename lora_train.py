@@ -336,7 +336,19 @@ class LoRATrainer:
 
     def _load_audio(self, path: str) -> torch.Tensor:
         """Load audio, resample to 48 kHz stereo, clamp to max_duration."""
-        wav, sr = torchaudio.load(path)
+        try:
+            wav, sr = torchaudio.load(path)
+        except Exception as torchaudio_exc:
+            # torchaudio on some Space images requires torchcodec for decode.
+            # Fallback to soundfile so training can proceed without torchcodec.
+            try:
+                audio_np, sr = sf.read(path, dtype="float32", always_2d=True)
+                wav = torch.from_numpy(audio_np.T)
+            except Exception as sf_exc:
+                raise RuntimeError(
+                    f"Failed to decode audio '{path}' with torchaudio ({torchaudio_exc}) "
+                    f"and soundfile ({sf_exc})."
+                ) from sf_exc
 
         # Resample if needed
         if sr != self.cfg.sample_rate:
