@@ -334,6 +334,35 @@ class LoRATrainer:
     # Data loading
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _coerce_audio_tensor(audio: Any) -> torch.Tensor:
+        """Coerce decoded audio into torch.Tensor with shape [C, T]."""
+        if isinstance(audio, list):
+            audio = np.asarray(audio, dtype=np.float32)
+        if isinstance(audio, np.ndarray):
+            audio = torch.from_numpy(audio)
+        if not torch.is_tensor(audio):
+            raise TypeError(f"Unsupported audio type: {type(audio)}")
+
+        # Ensure floating point for downstream resample/vae encode.
+        if not torch.is_floating_point(audio):
+            audio = audio.float()
+
+        # Normalize dimensions to [C, T].
+        if audio.dim() == 1:
+            audio = audio.unsqueeze(0)
+        elif audio.dim() == 2:
+            # Accept either [T, C] or [C, T]; transpose only when clearly [T, C].
+            if audio.shape[0] > audio.shape[1] and audio.shape[1] <= 8:
+                audio = audio.transpose(0, 1)
+        elif audio.dim() == 3:
+            # If batched, take first item.
+            audio = audio[0]
+        else:
+            raise ValueError(f"Unexpected audio dims: {tuple(audio.shape)}")
+
+        return audio.contiguous()
+
     def _load_audio(self, path: str) -> torch.Tensor:
         """Load audio, resample to 48 kHz stereo, clamp to max_duration."""
         try:
@@ -349,6 +378,8 @@ class LoRATrainer:
                     f"Failed to decode audio '{path}' with torchaudio ({torchaudio_exc}) "
                     f"and soundfile ({sf_exc})."
                 ) from sf_exc
+
+        wav = self._coerce_audio_tensor(wav)
 
         # Resample if needed
         if sr != self.cfg.sample_rate:

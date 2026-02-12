@@ -1723,13 +1723,36 @@ class AceStepHandler:
 
     def _load_audio_any_backend(self, audio_file):
         """Load audio with torchaudio first, then soundfile fallback."""
+        def _coerce_audio_tensor(audio_obj):
+            if isinstance(audio_obj, list):
+                audio_obj = np.asarray(audio_obj, dtype=np.float32)
+            if isinstance(audio_obj, np.ndarray):
+                audio_obj = torch.from_numpy(audio_obj)
+            if not torch.is_tensor(audio_obj):
+                raise TypeError(f"Unsupported audio type: {type(audio_obj)}")
+
+            if not torch.is_floating_point(audio_obj):
+                audio_obj = audio_obj.float()
+
+            # Normalize to [C, T]
+            if audio_obj.dim() == 1:
+                audio_obj = audio_obj.unsqueeze(0)
+            elif audio_obj.dim() == 2:
+                if audio_obj.shape[0] > audio_obj.shape[1] and audio_obj.shape[1] <= 8:
+                    audio_obj = audio_obj.transpose(0, 1)
+            elif audio_obj.dim() == 3:
+                audio_obj = audio_obj[0]
+            else:
+                raise ValueError(f"Unexpected audio dims: {tuple(audio_obj.shape)}")
+            return audio_obj.contiguous()
+
         try:
-            return torchaudio.load(audio_file)
+            audio, sr = torchaudio.load(audio_file)
+            return _coerce_audio_tensor(audio), sr
         except Exception as torchaudio_exc:
             try:
                 audio_np, sr = sf.read(audio_file, dtype="float32", always_2d=True)
-                audio = torch.from_numpy(audio_np.T)
-                return audio, sr
+                return _coerce_audio_tensor(audio_np.T), sr
             except Exception as sf_exc:
                 raise RuntimeError(
                     f"Audio decode failed for '{audio_file}' with torchaudio ({torchaudio_exc}) "
