@@ -124,7 +124,7 @@ class LoRATrainConfig:
     lora_alpha: int = 64
     lora_dropout: float = 0.1
     lora_target_modules: List[str] = field(
-        default_factory=lambda: ["to_q", "to_k", "to_v", "to_out.0"]
+        default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj"]
     )
 
     # Optimiser
@@ -196,6 +196,40 @@ class LoRATrainer:
     # Setup
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _resolve_lora_target_modules(model, requested_targets: Optional[List[str]]) -> List[str]:
+        """Resolve LoRA target module suffixes against the actual decoder module names."""
+        linear_module_names = [
+            name for name, module in model.named_modules() if isinstance(module, torch.nn.Linear)
+        ]
+
+        def _exists_as_suffix(target: str) -> bool:
+            return any(name.endswith(target) for name in linear_module_names)
+
+        requested_targets = requested_targets or []
+        resolved = [target for target in requested_targets if _exists_as_suffix(target)]
+        if resolved:
+            return resolved
+
+        fallback_groups = [
+            ["q_proj", "k_proj", "v_proj", "o_proj"],
+            ["to_q", "to_k", "to_v", "to_out.0"],
+            ["query", "key", "value", "out_proj"],
+            ["wq", "wk", "wv", "wo"],
+            ["qkv", "proj_out"],
+        ]
+        for group in fallback_groups:
+            group_resolved = [target for target in group if _exists_as_suffix(target)]
+            if len(group_resolved) >= 2:
+                return group_resolved
+
+        sample = ", ".join(linear_module_names[:30])
+        raise ValueError(
+            "Could not find LoRA target modules in decoder. "
+            f"Requested={requested_targets}. "
+            f"Sample linear modules: {sample}"
+        )
+
     def prepare(self):
         """Attach LoRA adapters to the decoder and build the optimiser."""
         import copy
@@ -223,11 +257,16 @@ class LoRATrainer:
                 is_trainable=True,
             )
         else:
+            resolved_targets = self._resolve_lora_target_modules(
+                self.handler.model.decoder,
+                self.cfg.lora_target_modules,
+            )
+            logger.info(f"Using LoRA target modules: {resolved_targets}")
             peft_cfg = LoraConfig(
                 r=self.cfg.lora_rank,
                 lora_alpha=self.cfg.lora_alpha,
                 lora_dropout=self.cfg.lora_dropout,
-                target_modules=self.cfg.lora_target_modules,
+                target_modules=resolved_targets,
                 bias="none",
                 task_type=TaskType.FEATURE_EXTRACTION,
             )
