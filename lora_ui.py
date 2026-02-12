@@ -223,10 +223,14 @@ def auto_label_all(overwrite_existing: bool):
 
     for idx, entry in enumerate(dataset_entries):
         try:
-            has_text = bool((entry.caption or "").strip()) or bool((entry.lyrics or "").strip())
-            if has_text and not overwrite_existing:
+            has_caption = bool((entry.caption or "").strip())
+            has_lyrics = bool((entry.lyrics or "").strip())
+            # Only skip when both major text fields already exist.
+            # If one is missing, still run auto-label to fill gaps.
+            has_both_text_fields = has_caption and has_lyrics
+            if has_both_text_fields and not overwrite_existing:
                 skipped += 1
-                logs.append(f"[{idx}] Skipped (already has caption/lyrics): {Path(entry.audio_path).name}")
+                logs.append(f"[{idx}] Skipped (caption+lyrics already present): {Path(entry.audio_path).name}")
                 continue
 
             codes = handler.convert_src_audio_to_codes(entry.audio_path)
