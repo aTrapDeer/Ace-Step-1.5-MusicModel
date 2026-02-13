@@ -19,6 +19,12 @@ from pathlib import Path
 from typing import List, Optional
 
 import gradio as gr
+# On Hugging Face Spaces Zero, `spaces` must be imported before CUDA-related modules.
+if os.getenv("SPACE_ID"):
+    try:
+        import spaces  # noqa: F401
+    except Exception:
+        pass
 import torch
 from loguru import logger
 

@@ -1,5 +1,12 @@
 import os
 
+# On Hugging Face Spaces Zero, `spaces` must be imported before CUDA-related modules.
+if os.getenv("SPACE_ID"):
+    try:
+        import spaces  # noqa: F401
+    except Exception:
+        pass
+
 from lora_ui import build_ui
 
 app = build_ui()
