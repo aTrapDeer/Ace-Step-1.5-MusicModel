@@ -150,11 +150,17 @@ def scan_folder(folder_path: str):
 def load_uploaded(file_paths: List[str]):
     global dataset_entries, _auto_label_cursor
     if not file_paths:
-        return "Drop one or more audio files first.", []
+        return "Drop audio files (and optional .json sidecars) first.", []
+    sidecar_count = sum(
+        1 for p in file_paths if isinstance(p, str) and Path(p).suffix.lower() == ".json"
+    )
     dataset_entries = scan_uploaded_files(file_paths)
     _auto_label_cursor = 0
     rows = _rows_from_entries(dataset_entries)
-    msg = f"Loaded {len(dataset_entries)} dropped audio files."
+    msg = (
+        f"Loaded {len(dataset_entries)} dropped audio files."
+        + (f" Matched {sidecar_count} uploaded sidecar JSON file(s)." if sidecar_count else "")
+    )
     return msg, rows
 
 
@@ -697,7 +703,7 @@ def build_ui():
         with gr.Tab("Step 2 - Load Dataset"):
             gr.Markdown(
                 "### Instructions\n"
-                "1. Either scan a folder or drag/drop audio files.\n"
+                "1. Either scan a folder or drag/drop audio files (+ optional .json sidecars).\n"
                 "2. Confirm tracks appear in the table.\n"
                 "3. Optional: run Auto-Label All to fill caption/lyrics/metas.\n"
                 "4. Optional: edit metadata manually and save sidecar JSON."
@@ -707,9 +713,9 @@ def build_ui():
                 scan_btn = gr.Button("Scan Folder")
             with gr.Row():
                 upload_files = gr.Files(
-                    label="Drag/Drop Audio Files",
+                    label="Drag/Drop Audio Files (+ Optional JSON Sidecars)",
                     file_count="multiple",
-                    file_types=["audio"],
+                    file_types=["audio", ".json"],
                     type="filepath",
                 )
                 upload_btn = gr.Button("Load Dropped Files")

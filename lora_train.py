@@ -97,16 +97,63 @@ def scan_dataset_folder(folder: str) -> List[TrackEntry]:
 
 
 def scan_uploaded_files(file_paths: List[str]) -> List[TrackEntry]:
-    """Build entries from dropped/uploaded files."""
+    """Build entries from dropped/uploaded files.
+
+    Supports uploading audio files together with optional ``.json`` sidecars.
+    Sidecars are matched by basename stem (``song.mp3`` <-> ``song.json``).
+    """
+    meta_by_stem: Dict[str, Dict[str, Any]] = {}
+    for path in file_paths:
+        p = Path(path)
+        if not p.exists() or p.suffix.lower() != ".json":
+            continue
+        try:
+            meta_by_stem[p.stem] = json.loads(p.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning(f"Bad uploaded sidecar {p}: {exc}")
+
     entries: List[TrackEntry] = []
     for path in file_paths:
         p = Path(path)
-        if not p.exists():
+        if not p.exists() or p.suffix.lower() not in AUDIO_EXTENSIONS:
             continue
-        if p.suffix.lower() not in AUDIO_EXTENSIONS:
+
+        uploaded_meta = meta_by_stem.get(p.stem)
+        if uploaded_meta is None:
+            entries.append(_load_track_entry(p))
             continue
-        entries.append(_load_track_entry(p))
-    logger.info(f"Loaded {len(entries)} uploaded audio files")
+
+        try:
+            info = torchaudio.info(str(p))
+            duration = info.num_frames / info.sample_rate
+        except Exception:
+            duration = uploaded_meta.get("duration")
+
+        bpm_val = uploaded_meta.get("bpm")
+        if isinstance(bpm_val, str) and bpm_val.strip():
+            try:
+                bpm_val = int(float(bpm_val))
+            except Exception:
+                bpm_val = None
+
+        entries.append(
+            TrackEntry(
+                audio_path=str(p),
+                caption=uploaded_meta.get("caption", "") or "",
+                lyrics=uploaded_meta.get("lyrics", "") or "",
+                bpm=bpm_val if isinstance(bpm_val, int) else None,
+                keyscale=uploaded_meta.get("keyscale", "") or "",
+                timesignature=uploaded_meta.get("timesignature", "4/4") or "4/4",
+                vocal_language=uploaded_meta.get("vocal_language", uploaded_meta.get("language", "en")) or "en",
+                duration=duration,
+            )
+        )
+
+    logger.info(
+        "Loaded {} uploaded audio files ({} uploaded sidecars detected)".format(
+            len(entries), len(meta_by_stem)
+        )
+    )
     return entries
 
 
