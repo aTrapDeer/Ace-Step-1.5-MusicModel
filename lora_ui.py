@@ -15,6 +15,7 @@ import random
 import threading
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 from typing import List, Optional
 
@@ -68,6 +69,7 @@ _auto_label_cursor: int = 0
 audio_saver = AudioSaver(default_format="wav")
 IS_SPACE = bool(os.getenv("SPACE_ID"))
 DEFAULT_OUTPUT_DIR = "/data/lora_output" if IS_SPACE else "lora_output"
+_last_training_output_dir: str = DEFAULT_OUTPUT_DIR
 
 if IS_SPACE:
     try:
@@ -432,7 +434,7 @@ def start_training(
     save_every, log_every, shift,
     max_duration, output_dir, resume_from,
 ):
-    global _training_thread, _training_status
+    global _training_thread, _training_status, _last_training_output_dir
 
     if handler.model is None:
         return "Model not initialised. Go to Model Setup first."
@@ -462,6 +464,8 @@ def start_training(
         resume_from=(resume_from.strip() if isinstance(resume_from, str) and resume_from.strip() else None),
         device=str(handler.device),
     )
+    if isinstance(output_dir, str) and output_dir.strip():
+        _last_training_output_dir = output_dir.strip()
 
     steps_per_epoch = math.ceil(len(dataset_entries) / int(batch_size))
     total_steps = steps_per_epoch * int(num_epochs)
@@ -518,6 +522,75 @@ def poll_training():
 def list_adapters(output_dir: str):
     adapters = LoRATrainer.list_adapters(output_dir)
     return adapters if adapters else ["(none found)"]
+
+
+def _find_latest_adapter_dir(base_dir: str) -> Optional[Path]:
+    root = Path(base_dir)
+    if not root.is_dir():
+        return None
+
+    final_dir = root / "final"
+    if final_dir.is_dir() and any(final_dir.rglob("*")):
+        return final_dir
+
+    epoch_dirs = [d for d in root.glob("epoch-*") if d.is_dir()]
+    if not epoch_dirs:
+        return None
+
+    def _epoch_key(path: Path):
+        try:
+            num = int(path.name.split("-", 1)[1])
+        except Exception:
+            num = -1
+        return (num, path.stat().st_mtime)
+
+    epoch_dirs.sort(key=_epoch_key, reverse=True)
+    for d in epoch_dirs:
+        if any(d.rglob("*")):
+            return d
+    return None
+
+
+def package_adapter_zip(output_dir: str):
+    """Zip the latest adapter checkpoint and return a downloadable file path."""
+    search_roots: List[str] = []
+    if isinstance(output_dir, str) and output_dir.strip():
+        search_roots.append(output_dir.strip())
+    if _last_training_output_dir and _last_training_output_dir not in search_roots:
+        search_roots.append(_last_training_output_dir)
+    if DEFAULT_OUTPUT_DIR not in search_roots:
+        search_roots.append(DEFAULT_OUTPUT_DIR)
+
+    adapter_dir: Optional[Path] = None
+    for root in search_roots:
+        adapter_dir = _find_latest_adapter_dir(root)
+        if adapter_dir is not None:
+            break
+
+    if adapter_dir is None:
+        return (
+            "No adapter checkpoint found. Expected e.g. /data/lora_output/final. "
+            "Train first or provide the correct output directory.",
+            None,
+        )
+
+    export_root = Path(tempfile.gettempdir()) / "lora_exports"
+    export_root.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    zip_path = export_root / f"{adapter_dir.parent.name}-{adapter_dir.name}-{ts}.zip"
+
+    with zipfile.ZipFile(zip_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for f in adapter_dir.rglob("*"):
+            if f.is_file():
+                arcname = Path(adapter_dir.name) / f.relative_to(adapter_dir)
+                zf.write(f, arcname=str(arcname))
+
+    size_mb = zip_path.stat().st_size / (1024 * 1024)
+    status = (
+        f"Packaged adapter from '{adapter_dir}'. "
+        f"ZIP size: {size_mb:.1f} MB. Download below."
+    )
+    return status, str(zip_path)
 
 
 @_gpu_callback
@@ -911,6 +984,18 @@ def build_ui():
                 refresh_btn.click(_refresh, adapter_dir, adapter_dd, api_name="list_adapters")
                 load_btn.click(load_adapter, adapter_dd, adapter_status, api_name="load_adapter")
                 unload_btn.click(unload_adapter, outputs=adapter_status, api_name="unload_adapter")
+
+                with gr.Row():
+                    export_dir = gr.Textbox(label="Export From Output Directory", value=DEFAULT_OUTPUT_DIR)
+                    export_btn = gr.Button("Package Adapter ZIP")
+                export_status = gr.Textbox(label="Export Status", interactive=False)
+                export_file = gr.File(label="Download Adapter ZIP", type="filepath", interactive=False)
+                export_btn.click(
+                    package_adapter_zip,
+                    export_dir,
+                    [export_status, export_file],
+                    api_name="package_adapter_zip",
+                )
 
             with gr.Accordion("Generation Settings", open=True):
                 with gr.Row():
