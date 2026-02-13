@@ -231,7 +231,7 @@ def _write_entry_sidecar(entry: TrackEntry):
 
 
 @_gpu_callback
-def auto_label_all(overwrite_existing: bool):
+def auto_label_all(overwrite_existing: bool, caption_only: bool):
     """Auto-label all loaded tracks using ACE audio understanding (audio->codes->metadata)."""
     global dataset_entries
 
@@ -252,7 +252,7 @@ def auto_label_all(overwrite_existing: bool):
             missing_fields = []
             if not (entry.caption or "").strip():
                 missing_fields.append("caption")
-            if not (entry.lyrics or "").strip():
+            if (not caption_only) and (not (entry.lyrics or "").strip()):
                 missing_fields.append("lyrics")
             if entry.bpm is None:
                 missing_fields.append("bpm")
@@ -288,8 +288,9 @@ def auto_label_all(overwrite_existing: bool):
             # Update fields. If overwrite is false, fill only missing values.
             if overwrite_existing or not (entry.caption or "").strip():
                 entry.caption = (result.caption or entry.caption or "").strip()
-            if overwrite_existing or not (entry.lyrics or "").strip():
-                entry.lyrics = (result.lyrics or entry.lyrics or "").strip()
+            if not caption_only:
+                if overwrite_existing or not (entry.lyrics or "").strip():
+                    entry.lyrics = (result.lyrics or entry.lyrics or "").strip()
             if entry.bpm is None and result.bpm is not None:
                 entry.bpm = int(result.bpm)
             if (not entry.keyscale) and result.keyscale:
@@ -308,7 +309,8 @@ def auto_label_all(overwrite_existing: bool):
             failed += 1
             logs.append(f"[{idx}] Exception: {Path(entry.audio_path).name} ({exc})")
 
-    summary = f"Auto-label complete. Updated={updated}, Skipped={skipped}, Failed={failed}"
+    mode = "caption-only" if caption_only else "caption+lyrics"
+    summary = f"Auto-label ({mode}) complete. Updated={updated}, Skipped={skipped}, Failed={failed}"
     detail = "\n".join(logs[-40:]) if logs else "No logs."
     return summary, _rows_from_entries(dataset_entries), detail
 
@@ -655,7 +657,8 @@ def build_ui():
             with gr.Accordion("Auto-Label (ACE audio understanding)", open=False):
                 gr.Markdown(
                     "Auto-label uses ACE: audio -> semantic codes -> metadata/lyrics.\n"
-                    "Initialize LM first, then run Auto-Label All."
+                    "Initialize LM first, then run Auto-Label All.\n"
+                    "Use Caption-Only if your dataset has no lyrics."
                 )
                 with gr.Row():
                     lm_model_dd = gr.Dropdown(
@@ -676,6 +679,7 @@ def build_ui():
                 with gr.Row():
                     init_lm_btn = gr.Button("Initialize Auto-Label LM")
                     overwrite_cb = gr.Checkbox(label="Overwrite Existing Caption/Lyrics", value=False)
+                    caption_only_cb = gr.Checkbox(label="Caption-Only (Skip Lyrics)", value=True)
                     auto_label_btn = gr.Button("Auto-Label All", variant="primary")
                 lm_init_status = gr.Textbox(label="Auto-Label LM Status", lines=5, interactive=False)
                 auto_label_status = gr.Textbox(label="Auto-Label Summary", interactive=False)
@@ -688,7 +692,7 @@ def build_ui():
                 )
                 auto_label_btn.click(
                     auto_label_all,
-                    [overwrite_cb],
+                    [overwrite_cb, caption_only_cb],
                     [auto_label_status, dataset_table, auto_label_log],
                     api_name="auto_label_all",
                 )
