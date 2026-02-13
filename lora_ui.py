@@ -249,14 +249,22 @@ def auto_label_all(overwrite_existing: bool):
 
     for idx, entry in enumerate(dataset_entries):
         try:
-            has_caption = bool((entry.caption or "").strip())
-            has_lyrics = bool((entry.lyrics or "").strip())
-            # Only skip when both major text fields already exist.
-            # If one is missing, still run auto-label to fill gaps.
-            has_both_text_fields = has_caption and has_lyrics
-            if has_both_text_fields and not overwrite_existing:
+            missing_fields = []
+            if not (entry.caption or "").strip():
+                missing_fields.append("caption")
+            if not (entry.lyrics or "").strip():
+                missing_fields.append("lyrics")
+            if entry.bpm is None:
+                missing_fields.append("bpm")
+            if not (entry.keyscale or "").strip():
+                missing_fields.append("keyscale")
+            if entry.duration is None:
+                missing_fields.append("duration")
+
+            # Skip only when every core field is already available.
+            if (not overwrite_existing) and (len(missing_fields) == 0):
                 skipped += 1
-                logs.append(f"[{idx}] Skipped (caption+lyrics already present): {Path(entry.audio_path).name}")
+                logs.append(f"[{idx}] Skipped (already fully labeled): {Path(entry.audio_path).name}")
                 continue
 
             codes = handler.convert_src_audio_to_codes(entry.audio_path)
