@@ -175,6 +175,11 @@ def save_sidecar(index: int, caption: str, lyrics: str, bpm: str, keyscale: str,
 
 
 def init_auto_label_lm(lm_model_path: str, lm_backend: str, lm_device: str):
+    return _init_auto_label_lm_gpu(lm_model_path, lm_backend, lm_device)
+
+
+@_gpu_callback
+def _init_auto_label_lm_gpu(lm_model_path: str, lm_backend: str, lm_device: str):
     """Initialize LLM for dataset auto-labeling."""
     checkpoint_dir = os.path.join(PROJECT_ROOT, "checkpoints")
     full_lm_path = os.path.join(checkpoint_dir, lm_model_path)
