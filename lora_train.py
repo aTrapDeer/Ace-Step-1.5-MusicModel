@@ -628,6 +628,8 @@ class LoRATrainer:
 
                 # Prepare condition using the model's own prepare_condition
                 with torch.no_grad():
+                    # Some ACE-Step builds expect tensor flags here (not Python lists).
+                    is_covers = torch.zeros(1, device=self.device, dtype=torch.bool)
                     enc_hs, enc_mask, ctx_lat = self.handler.model.prepare_condition(
                         text_hidden_states=text_h,
                         text_attention_mask=text_m,
@@ -643,7 +645,7 @@ class LoRATrainer:
                         silence_latent=self.handler.silence_latent,
                         src_latents=latent,
                         chunk_masks=torch.ones_like(latent),
-                        is_covers=[False],
+                        is_covers=is_covers,
                     )
 
                 dataset.append(
