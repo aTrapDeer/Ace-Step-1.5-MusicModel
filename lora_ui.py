@@ -58,6 +58,8 @@ _training_thread: Optional[threading.Thread] = None
 _training_log: List[str] = []
 _training_status: str = "idle"  # idle | running | stopped | done
 _training_started_at: Optional[float] = None
+_model_init_ok: bool = False
+_model_init_status: str = ""
 
 audio_saver = AudioSaver(default_format="wav")
 IS_SPACE = bool(os.getenv("SPACE_ID"))
@@ -101,6 +103,7 @@ def init_model(
     offload_cpu: bool,
     offload_dit_cpu: bool,
 ):
+    global _model_init_ok, _model_init_status
     status, ok = _init_model_gpu(
         project_root=PROJECT_ROOT,
         config_path=model_name,
@@ -110,6 +113,8 @@ def init_model(
         offload_to_cpu=offload_cpu,
         offload_dit_to_cpu=offload_dit_cpu,
     )
+    _model_init_ok = bool(ok)
+    _model_init_status = status or ""
     return status
 
 
@@ -552,18 +557,32 @@ def ab_test(
 # ===========================================================================
 
 def get_workflow_status():
-    model_ready = "Ready" if handler.model is not None else "Not initialized"
+    model_is_ready = (handler.model is not None) or _model_init_ok
+    model_ready = "Ready" if model_is_ready else "Not initialized"
     tracks = len(dataset_entries)
     training_state = _training_status
     lora_status = handler.get_lora_status() if handler.model is not None else {"loaded": False, "active": False, "scale": 1.0}
+    init_note = ""
+    if IS_SPACE and _model_init_ok and handler.model is None:
+        init_note = " (Zero GPU callback context)"
     return (
-        f"Model: {model_ready}\n"
+        f"Model: {model_ready}{init_note}\n"
         f"Tracks Loaded: {tracks}\n"
         f"Training: {training_state}\n"
         f"LoRA Loaded: {lora_status.get('loaded', False)}\n"
         f"LoRA Active: {lora_status.get('active', False)}\n"
         f"LoRA Scale: {lora_status.get('scale', 1.0)}"
     )
+
+
+def init_model_and_status(
+    model_name: str,
+    device: str,
+    offload_cpu: bool,
+    offload_dit_cpu: bool,
+):
+    status = init_model(model_name, device, offload_cpu, offload_dit_cpu)
+    return status, get_workflow_status()
 
 
 def build_ui():
@@ -608,9 +627,9 @@ def build_ui():
             init_btn = gr.Button("Initialize Model", variant="primary")
             init_out = gr.Textbox(label="Initialization Output", lines=8, interactive=False)
             init_btn.click(
-                init_model,
+                init_model_and_status,
                 [model_dd, device_dd, offload_cb, offload_dit_cb],
-                init_out,
+                [init_out, workflow_status],
                 api_name="init_model",
             )
 
