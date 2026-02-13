@@ -60,6 +60,7 @@ _training_status: str = "idle"  # idle | running | stopped | done
 _training_started_at: Optional[float] = None
 _model_init_ok: bool = False
 _model_init_status: str = ""
+_last_model_init_args: Optional[dict] = None
 
 audio_saver = AudioSaver(default_format="wav")
 IS_SPACE = bool(os.getenv("SPACE_ID"))
@@ -103,8 +104,8 @@ def init_model(
     offload_cpu: bool,
     offload_dit_cpu: bool,
 ):
-    global _model_init_ok, _model_init_status
-    status, ok = _init_model_gpu(
+    global _model_init_ok, _model_init_status, _last_model_init_args
+    _last_model_init_args = dict(
         project_root=PROJECT_ROOT,
         config_path=model_name,
         device=device,
@@ -113,6 +114,7 @@ def init_model(
         offload_to_cpu=offload_cpu,
         offload_dit_to_cpu=offload_dit_cpu,
     )
+    status, ok = _init_model_gpu(**_last_model_init_args)
     _model_init_ok = bool(ok)
     _model_init_status = status or ""
     return status
@@ -120,6 +122,10 @@ def init_model(
 
 @_gpu_callback
 def _init_model_gpu(**kwargs):
+    return _init_model_impl(**kwargs)
+
+
+def _init_model_impl(**kwargs):
     return handler.initialize_service(**kwargs)
 
 
@@ -241,7 +247,12 @@ def auto_label_all(overwrite_existing: bool, caption_only: bool):
     global dataset_entries
 
     if handler.model is None:
-        return "Initialize model first in Step 1.", [], "Auto-label skipped."
+        if _model_init_ok and _last_model_init_args:
+            status, ok = _init_model_impl(**_last_model_init_args)
+            if not ok:
+                return f"Model reload failed before auto-label:\n{status}", [], "Auto-label skipped."
+        else:
+            return "Initialize model first in Step 1.", [], "Auto-label skipped."
     if not dataset_entries:
         return "Load dataset first in Step 2.", [], "Auto-label skipped."
     if not llm_handler.llm_initialized:
