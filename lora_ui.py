@@ -230,6 +230,7 @@ def _write_entry_sidecar(entry: TrackEntry):
     sidecar_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+@_gpu_callback
 def auto_label_all(overwrite_existing: bool):
     """Auto-label all loaded tracks using ACE audio understanding (audio->codes->metadata)."""
     global dataset_entries
@@ -438,12 +439,14 @@ def list_adapters(output_dir: str):
     return adapters if adapters else ["(none found)"]
 
 
+@_gpu_callback
 def load_adapter(adapter_path: str):
     if not adapter_path or adapter_path == "(none found)":
         return "Select a valid adapter path."
     return handler.load_lora(adapter_path)
 
 
+@_gpu_callback
 def unload_adapter():
     return handler.unload_lora()
 
@@ -452,6 +455,7 @@ def set_lora_scale(scale: float):
     return handler.set_lora_scale(scale)
 
 
+@_gpu_callback
 def generate_sample(
     prompt: str,
     lyrics: str,
@@ -510,6 +514,7 @@ def generate_sample(
     return tmp.name, f"Generated successfully, seed={actual_seed}."
 
 
+@_gpu_callback
 def ab_test(
     prompt, lyrics, duration, bpm, steps, guidance, seed,
     lora_scale_b,
