@@ -63,6 +63,15 @@ audio_saver = AudioSaver(default_format="wav")
 IS_SPACE = bool(os.getenv("SPACE_ID"))
 DEFAULT_OUTPUT_DIR = "/data/lora_output" if IS_SPACE else "lora_output"
 
+if IS_SPACE:
+    try:
+        import spaces as _hf_spaces
+        _gpu_callback = _hf_spaces.GPU(duration=300)
+    except Exception:
+        _gpu_callback = lambda fn: fn
+else:
+    _gpu_callback = lambda fn: fn
+
 
 def _rows_from_entries(entries: List[TrackEntry]):
     rows = []
@@ -92,7 +101,7 @@ def init_model(
     offload_cpu: bool,
     offload_dit_cpu: bool,
 ):
-    status, ok = handler.initialize_service(
+    status, ok = _init_model_gpu(
         project_root=PROJECT_ROOT,
         config_path=model_name,
         device=device,
@@ -102,6 +111,11 @@ def init_model(
         offload_dit_to_cpu=offload_dit_cpu,
     )
     return status
+
+
+@_gpu_callback
+def _init_model_gpu(**kwargs):
+    return handler.initialize_service(**kwargs)
 
 
 # ===========================================================================
