@@ -61,6 +61,8 @@ _training_started_at: Optional[float] = None
 _model_init_ok: bool = False
 _model_init_status: str = ""
 _last_model_init_args: Optional[dict] = None
+_lm_init_ok: bool = False
+_last_lm_init_args: Optional[dict] = None
 
 audio_saver = AudioSaver(default_format="wav")
 IS_SPACE = bool(os.getenv("SPACE_ID"))
@@ -186,11 +188,23 @@ def save_sidecar(index: int, caption: str, lyrics: str, bpm: str, keyscale: str,
 
 
 def init_auto_label_lm(lm_model_path: str, lm_backend: str, lm_device: str):
-    return _init_auto_label_lm_gpu(lm_model_path, lm_backend, lm_device)
+    global _lm_init_ok, _last_lm_init_args
+    _last_lm_init_args = dict(
+        lm_model_path=lm_model_path,
+        lm_backend=lm_backend,
+        lm_device=lm_device,
+    )
+    status = _init_auto_label_lm_gpu(**_last_lm_init_args)
+    _lm_init_ok = not str(status).startswith("LM init failed:") and not str(status).startswith("LM init exception:")
+    return status
 
 
 @_gpu_callback
 def _init_auto_label_lm_gpu(lm_model_path: str, lm_backend: str, lm_device: str):
+    return _init_auto_label_lm_impl(lm_model_path, lm_backend, lm_device)
+
+
+def _init_auto_label_lm_impl(lm_model_path: str, lm_backend: str, lm_device: str):
     """Initialize LLM for dataset auto-labeling."""
     checkpoint_dir = os.path.join(PROJECT_ROOT, "checkpoints")
     full_lm_path = os.path.join(checkpoint_dir, lm_model_path)
@@ -256,7 +270,16 @@ def auto_label_all(overwrite_existing: bool, caption_only: bool):
     if not dataset_entries:
         return "Load dataset first in Step 2.", [], "Auto-label skipped."
     if not llm_handler.llm_initialized:
-        return "Initialize Auto-Label LM first.", _rows_from_entries(dataset_entries), "Auto-label skipped."
+        if _lm_init_ok and _last_lm_init_args:
+            status = _init_auto_label_lm_impl(**_last_lm_init_args)
+            if not llm_handler.llm_initialized:
+                return (
+                    f"Auto-label LM reload failed:\n{status}",
+                    _rows_from_entries(dataset_entries),
+                    "Auto-label skipped.",
+                )
+        else:
+            return "Initialize Auto-Label LM first.", _rows_from_entries(dataset_entries), "Auto-label skipped."
 
     updated = 0
     skipped = 0
