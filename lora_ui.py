@@ -63,6 +63,7 @@ _model_init_status: str = ""
 _last_model_init_args: Optional[dict] = None
 _lm_init_ok: bool = False
 _last_lm_init_args: Optional[dict] = None
+_auto_label_cursor: int = 0
 
 audio_saver = AudioSaver(default_format="wav")
 IS_SPACE = bool(os.getenv("SPACE_ID"))
@@ -136,20 +137,22 @@ def _init_model_impl(**kwargs):
 # ===========================================================================
 
 def scan_folder(folder_path: str):
-    global dataset_entries
+    global dataset_entries, _auto_label_cursor
     if not folder_path or not os.path.isdir(folder_path):
         return "Provide a valid folder path.", []
     dataset_entries = scan_dataset_folder(folder_path)
+    _auto_label_cursor = 0
     rows = _rows_from_entries(dataset_entries)
     msg = f"Found {len(dataset_entries)} audio files."
     return msg, rows
 
 
 def load_uploaded(file_paths: List[str]):
-    global dataset_entries
+    global dataset_entries, _auto_label_cursor
     if not file_paths:
         return "Drop one or more audio files first.", []
     dataset_entries = scan_uploaded_files(file_paths)
+    _auto_label_cursor = 0
     rows = _rows_from_entries(dataset_entries)
     msg = f"Loaded {len(dataset_entries)} dropped audio files."
     return msg, rows
@@ -256,9 +259,9 @@ def _write_entry_sidecar(entry: TrackEntry):
 
 
 @_gpu_callback
-def auto_label_all(overwrite_existing: bool, caption_only: bool):
+def auto_label_all(overwrite_existing: bool, caption_only: bool, max_files_per_run: int = 6, reset_cursor: bool = False):
     """Auto-label all loaded tracks using ACE audio understanding (audio->codes->metadata)."""
-    global dataset_entries
+    global dataset_entries, _auto_label_cursor
 
     if handler.model is None:
         if _model_init_ok and _last_model_init_args:
@@ -281,12 +284,23 @@ def auto_label_all(overwrite_existing: bool, caption_only: bool):
         else:
             return "Initialize Auto-Label LM first.", _rows_from_entries(dataset_entries), "Auto-label skipped."
 
+    if max_files_per_run <= 0:
+        max_files_per_run = 6
+    if reset_cursor:
+        _auto_label_cursor = 0
+    if _auto_label_cursor < 0 or _auto_label_cursor >= len(dataset_entries):
+        _auto_label_cursor = 0
+
+    start_idx = _auto_label_cursor
+    end_idx = min(len(dataset_entries), start_idx + int(max_files_per_run))
+
     updated = 0
     skipped = 0
     failed = 0
     logs: List[str] = []
 
-    for idx, entry in enumerate(dataset_entries):
+    for idx in range(start_idx, end_idx):
+        entry = dataset_entries[idx]
         try:
             missing_fields = []
             if not (entry.caption or "").strip():
@@ -348,8 +362,20 @@ def auto_label_all(overwrite_existing: bool, caption_only: bool):
             failed += 1
             logs.append(f"[{idx}] Exception: {Path(entry.audio_path).name} ({exc})")
 
+    _auto_label_cursor = 0 if end_idx >= len(dataset_entries) else end_idx
     mode = "caption-only" if caption_only else "caption+lyrics"
-    summary = f"Auto-label ({mode}) complete. Updated={updated}, Skipped={skipped}, Failed={failed}"
+    progress_msg = (
+        f"Processed batch {start_idx + 1}-{end_idx} of {len(dataset_entries)}. "
+        if len(dataset_entries) > 0 else ""
+    )
+    if _auto_label_cursor == 0 and len(dataset_entries) > 0:
+        progress_msg += "Reached end of dataset."
+    else:
+        progress_msg += f"Next start index: {_auto_label_cursor}."
+    summary = (
+        f"Auto-label ({mode}) complete. Updated={updated}, Skipped={skipped}, Failed={failed}. "
+        f"{progress_msg}"
+    )
     detail = "\n".join(logs[-40:]) if logs else "No logs."
     return summary, _rows_from_entries(dataset_entries), detail
 
@@ -711,7 +737,8 @@ def build_ui():
                 gr.Markdown(
                     "Auto-label uses ACE: audio -> semantic codes -> metadata/lyrics.\n"
                     "Initialize LM first, then run Auto-Label All.\n"
-                    "Use Caption-Only if your dataset has no lyrics."
+                    "Use Caption-Only if your dataset has no lyrics.\n"
+                    "On Zero GPU, process in smaller batches and click Auto-Label All repeatedly."
                 )
                 with gr.Row():
                     lm_model_dd = gr.Dropdown(
@@ -734,6 +761,9 @@ def build_ui():
                     overwrite_cb = gr.Checkbox(label="Overwrite Existing Caption/Lyrics", value=False)
                     caption_only_cb = gr.Checkbox(label="Caption-Only (Skip Lyrics)", value=True)
                     auto_label_btn = gr.Button("Auto-Label All", variant="primary")
+                with gr.Row():
+                    max_files_per_run = gr.Slider(1, 25, value=6, step=1, label="Files Per Run (Zero GPU Safe)")
+                    reset_cursor_cb = gr.Checkbox(label="Restart From First Track", value=False)
                 lm_init_status = gr.Textbox(label="Auto-Label LM Status", lines=5, interactive=False)
                 auto_label_status = gr.Textbox(label="Auto-Label Summary", interactive=False)
                 auto_label_log = gr.Textbox(label="Auto-Label Log", lines=8, interactive=False)
@@ -745,7 +775,7 @@ def build_ui():
                 )
                 auto_label_btn.click(
                     auto_label_all,
-                    [overwrite_cb, caption_only_cb],
+                    [overwrite_cb, caption_only_cb, max_files_per_run, reset_cursor_cb],
                     [auto_label_status, dataset_table, auto_label_log],
                     api_name="auto_label_all",
                 )
