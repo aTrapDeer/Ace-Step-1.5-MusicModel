@@ -9,6 +9,7 @@ pinned: false
 ---
 
 # ACE-Step 1.5 LoRA Studio
+- Andrew Rapier
 
 Train ACE-Step 1.5 LoRA adapters, deploy your own Hugging Face Space, and run production-style inference through a Dedicated Endpoint.
 
@@ -131,7 +132,9 @@ Or run scripted tests:
 
 ## Findings and notes
 
-Current baseline analysis and improvement ideas are tracked in `summaries/findings.md`.
+Current baseline analysis and improvement ideas are tracked in:
+
+- `summaries/findings.md`
 
 ## Docs
 
