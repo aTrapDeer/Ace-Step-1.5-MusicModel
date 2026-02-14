@@ -3,6 +3,7 @@ import base64
 import io
 import os
 import traceback
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -27,7 +28,7 @@ class EndpointHandler:
         "sample_rate": 44100,
         "seed": 42,
         "guidance_scale": 7.0,
-        "steps": 8,
+        "steps": 50,
         "use_lm": true,
         "simple_prompt": false,
         "instrumental": false,
@@ -50,8 +51,10 @@ class EndpointHandler:
         self.project_root = os.path.dirname(os.path.abspath(__file__))
 
         self.model_repo = os.getenv("ACE_MODEL_REPO", "ACE-Step/Ace-Step1.5")
-        self.config_path = os.getenv("ACE_CONFIG_PATH", "acestep-v15-turbo")
-        self.lm_model_path = os.getenv("ACE_LM_MODEL_PATH", "acestep-5Hz-lm-1.7B")
+        # Default to the larger quality-oriented setup.
+        # Override via ACE_CONFIG_PATH / ACE_LM_MODEL_PATH when needed.
+        self.config_path = os.getenv("ACE_CONFIG_PATH", "acestep-v15-sft")
+        self.lm_model_path = os.getenv("ACE_LM_MODEL_PATH", "acestep-5Hz-lm-4B")
         self.lm_backend = os.getenv("ACE_LM_BACKEND", "pt")
         self.download_source = os.getenv("ACE_DOWNLOAD_SOURCE", "huggingface")
 
@@ -233,6 +236,31 @@ class EndpointHandler:
 
         try:
             checkpoint_dir = os.path.join(self.project_root, "checkpoints")
+            full_lm_model_path = os.path.join(checkpoint_dir, self.lm_model_path)
+            if not os.path.exists(full_lm_model_path):
+                try:
+                    from acestep.model_downloader import ensure_lm_model, ensure_main_model
+                except Exception as e:
+                    self.llm_error = f"LM download helper import failed: {type(e).__name__}: {e}"
+                    return False
+
+                # 1.7B ships with main; 0.6B/4B are standalone submodels.
+                if self.lm_model_path == "acestep-5Hz-lm-1.7B":
+                    dl_ok, dl_msg = ensure_main_model(
+                        checkpoints_dir=Path(checkpoint_dir),
+                        prefer_source=self.download_source,
+                    )
+                else:
+                    dl_ok, dl_msg = ensure_lm_model(
+                        model_name=self.lm_model_path,
+                        checkpoints_dir=Path(checkpoint_dir),
+                        prefer_source=self.download_source,
+                    )
+                self.init_details["llm_download"] = dl_msg
+                if not dl_ok:
+                    self.llm_error = f"LM download failed: {dl_msg}"
+                    return False
+
             status, ok = self.llm_handler.initialize(
                 checkpoint_dir=checkpoint_dir,
                 lm_model_path=self.lm_model_path,
@@ -352,8 +380,14 @@ class EndpointHandler:
 
         seed = self._to_int(raw_inputs.get("seed", 42), 42)
         guidance_scale = self._to_float(raw_inputs.get("guidance_scale", 7.0), 7.0)
-        steps = self._to_int(raw_inputs.get("steps", raw_inputs.get("inference_steps", 8)), 8)
+        steps = self._to_int(raw_inputs.get("steps", raw_inputs.get("inference_steps", 50)), 50)
         steps = max(1, min(steps, 200))
+        bpm_raw = raw_inputs.get("bpm")
+        bpm = None
+        if bpm_raw is not None and str(bpm_raw).strip() != "":
+            bpm = self._to_int(bpm_raw, 0)
+            if bpm <= 0:
+                bpm = None
         use_lm = self._to_bool(raw_inputs.get("use_lm", raw_inputs.get("thinking", True)), True)
         allow_fallback = self._to_bool(raw_inputs.get("allow_fallback"), self.enable_fallback)
 
@@ -365,6 +399,7 @@ class EndpointHandler:
             "seed": seed,
             "guidance_scale": guidance_scale,
             "steps": steps,
+            "bpm": bpm,
             "use_lm": use_lm,
             "instrumental": instrumental,
             "simple_prompt": simple_prompt,
@@ -383,7 +418,7 @@ class EndpointHandler:
             "simple_expansion_error": None,
         }
 
-        bpm = None
+        bpm = req.get("bpm")
         keyscale = ""
         timesignature = ""
         vocal_language = "unknown"
@@ -399,7 +434,9 @@ class EndpointHandler:
                 if getattr(sample, "success", False):
                     caption = getattr(sample, "caption", "") or caption
                     lyrics = getattr(sample, "lyrics", "") or lyrics
-                    bpm = getattr(sample, "bpm", None)
+                    sample_bpm = getattr(sample, "bpm", None)
+                    if bpm is None:
+                        bpm = sample_bpm
                     keyscale = getattr(sample, "keyscale", "") or ""
                     timesignature = getattr(sample, "timesignature", "") or ""
                     vocal_language = getattr(sample, "language", "") or "unknown"
@@ -526,6 +563,7 @@ class EndpointHandler:
                     "seed": req["seed"],
                     "guidance_scale": req["guidance_scale"],
                     "steps": req["steps"],
+                    "bpm": req.get("bpm"),
                     "use_lm": req["use_lm"],
                     "simple_prompt": req["simple_prompt"],
                     "instrumental": req["instrumental"],

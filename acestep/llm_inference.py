@@ -457,7 +457,7 @@ class LLMHandler:
 
             # If lm_model_path is None, use default
             if lm_model_path is None:
-                lm_model_path = "acestep-5Hz-lm-1.7B"
+                lm_model_path = "acestep-5Hz-lm-4B"
                 logger.info(f"[initialize] lm_model_path is None, using default: {lm_model_path}")
 
             full_lm_model_path = os.path.join(checkpoint_dir, lm_model_path)

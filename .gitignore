@@ -1,4 +1,66 @@
+# Environment
 .env
-*.bat
-*.ps1
+.env.*
+!.env.example
+
+# Python cache/build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Tool and local runtime caches
+.cache/
+.huggingface/
+.gradio/
+
+# Logs/temp
+*.log
+*.tmp
+*.temp
+*.bak
+
+# Model/data/runtime artifacts
+checkpoints/
+lora_output/
+outputs/
+artifacts/
+models/
+datasets/
+/data/
 *.wav
+*.flac
+*.mp3
+*.ogg
+*.opus
+*.m4a
+*.aac
+*.pt
+*.bin
+*.safetensors
+*.ckpt
+*.onnx
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Optional local working copies
+Lora-ace-step/
+song_summaries_llm*.md

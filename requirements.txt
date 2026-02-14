@@ -14,3 +14,7 @@ vector-quantize-pytorch
 PyYAML
 modelscope
 filelock>=3.13.0
+peft>=0.11.0
+gradio>=4.0.0
+pandas
+bitsandbytes
