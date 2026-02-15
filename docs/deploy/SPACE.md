@@ -1,6 +1,7 @@
 # Deploy LoRA Studio To Your Own HF Space
 
 This guide deploys the full LoRA Studio UI to your own Hugging Face Space.
+For the dedicated Qwen captioning UI, see `docs/deploy/QWEN_SPACE.md`.
 
 ## Prerequisites
 
@@ -37,4 +38,3 @@ python scripts/hf_clone.py space --repo-id YOUR_USERNAME/YOUR_SPACE_NAME --priva
 - Space output defaults to `/data/lora_output` on Hugging Face Spaces.
 - Enable persistent storage if you need checkpoint retention across restarts.
 - For long-running non-interactive training, HF Jobs may be more cost-efficient than keeping a Space running.
-

@@ -1,124 +1,204 @@
-# Improving ACE-Step LoRA with Time-Event-Based Annotation
+# ACE-Step 1.5 Annotation and LoRA Findings (My Notes)
 
 [Back to project README](../README.md)
 
-## Baseline context in this repo
+## What I was trying to build
 
-This project already provides a solid end-to-end workflow:
+I wanted a reliable pipeline to:
 
-- Train LoRA adapters with `lora_train.py` and the Gradio UI (`app.py`, `lora_ui.py`).
-- Deploy generation through a custom endpoint runtime (`handler.py`, `acestep/`).
-- Test prompts and lyrics quickly with endpoint client scripts in `scripts/endpoint/`.
+1. Analyze my songs with AF3/Qwen-style timestamped musical detail.
+2. Clean and structure the results with ChatGPT.
+3. Save sidecar JSON files that ACE-Step 1.5 LoRA training can consume directly.
+4. Keep enough detail for future iteration (human edits, richer annotations, timeline/event work).
 
-Today, most conditioning in this pipeline is still global (caption, lyrics, BPM, key, tags). That is a strong baseline, but it does not explicitly teach *when* events happen inside a track.
+## What ACE-Step 1.5 actually reads during LoRA training
 
-## Core limitation
+Based on this repo's loader (`lora_train.py`), the training loop directly reads these JSON keys:
 
-Current annotations usually describe *what* a song is, not *when* events occur. The model can learn style and texture, but temporal structure is weaker:
+- `caption`
+- `lyrics`
+- `bpm`
+- `keyscale`
+- `timesignature`
+- `vocal_language`
+- `duration`
 
-- Verse/chorus transitions are often less deliberate than human-produced songs.
-- Build-ups, drops, or effect changes can feel averaged or blurred.
-- Subgenre-specific arrangement timing is harder to reproduce consistently.
+Anything else is effectively extra metadata for my own workflow. This is why I moved rich analysis detail into `caption` so it is not ignored by the model.
 
-## Observed baseline behavior (working assumption)
+## Endpoint stack comparison I observed
 
-From current prompt and endpoint testing workflows in this repo, the baseline appears to do best on:
+I tested two serving stacks on the same tracks/prompts.
 
-- overall timbre/style conditioning from caption-like prompts,
-- short-form motif continuity,
-- broad genre direction.
+### Stack A (lower quality)
 
-The baseline appears weaker on:
+- Model path: `nvidia/audio-flamingo-3-hf`
+- Runtime style: generic Transformers path with custom endpoint handler
+- Behavior I observed:
+  - Often short outputs
+  - Sometimes repetitive segment text
+  - Less convincing section-by-section progression
+- Latency I observed:
+  - Fast short runs
+  - Medium-length think runs
 
-- section-level planning across longer durations,
-- predictable timing of transitions (intro/verse/chorus/bridge),
-- reliable callback motifs that should reappear at known timestamps.
+### Stack B (higher quality)
 
-These are expected gaps for globally conditioned generation and provide a clear target for time-event experiments.
+- Model path:
+  - base: `nvidia/audio-flamingo-3`
+  - think adapter: `stage35`
+- Runtime style: NVIDIA-style `llava`/`generate_content` stack
+- Behavior I observed:
+  - Longer, richer timestamped prose
+  - Better flow across sections
+  - Better musical interaction detail (vocals + instruments + arrangement)
+- Latency I observed:
+  - Slower than Stack A
+  - Roughly around 1 minute per track in think/long style runs
 
-## Why time-event labels are promising
+### My conclusion
 
-1. Better musical structure: teach the model where sections start/end and where key transitions occur.
-2. Better genre fidelity: encode timing differences between styles that share similar instruments.
-3. Better control at inference: allow prompting for both content and structure (what + when).
+If I care about annotation quality, Stack B is clearly better even if it is slower.
 
-## Practical direction for this codebase
+## Main issues I hit and how I resolved them
 
-A useful next step is to extend the current sidecar metadata approach with optional timed events.
+### 1) Endpoint failed with `Unknown task custom`
 
-Example direction:
+Observed error:
 
-- Keep existing fields (`caption`, `lyrics`, `bpm`, etc.).
-- Add an `events` list with event type + start/end times.
-- Start with a small, high-quality subset before scaling.
+- `KeyError: "Unknown task custom ..."`
 
-Illustrative shape:
+What caused it:
 
-```json
-{
-  "caption": "emotional rnb pop with warm pads",
-  "bpm": 92,
-  "events": [
-    {"type": "intro", "start": 0.0, "end": 8.0},
-    {"type": "verse", "start": 8.0, "end": 32.0},
-    {"type": "chorus", "start": 32.0, "end": 48.0}
-  ]
-}
-```
+- Endpoint fell back to default pipeline path instead of loading my custom `handler.py`.
+- Log showed: `No custom pipeline found at /repository/handler.py`.
 
-Optional extension fields that may help later:
+Fix:
 
-- `intensity` (0-1) per event,
-- `instrument_focus` tags per section,
-- `transition_type` (hard cut, riser, filtered handoff, etc.).
+- Ensure endpoint repo has top-level `handler.py`.
+- Deploy using the custom endpoint template files exactly.
 
-## Early experiments worth running
+### 2) AF3 architecture not recognized
 
-- Compare baseline LoRA vs time-event LoRA on the same curated mini-dataset.
-- Score structural accuracy (section order, transition timing tolerance).
-- Run blind listening tests for perceived musical arc and arrangement coherence.
-- Track whether time labels improve consistency without reducing creativity.
+Observed error:
 
-## Suggested evaluation rubric (v1)
+- `model type audioflamingo3 not recognized`
 
-Use a simple shared scorecard to keep comparisons objective:
+What caused it:
 
-1. Structure match (0-5): generated section order vs target plan.
-2. Timing adherence (0-5): transition timestamps within tolerance window.
-3. Musical coherence (0-5): transitions feel intentional, not abrupt/noisy.
-4. Genre fit (0-5): arrangement behavior matches requested subgenre.
-5. Prompt fidelity (0-5): requested mood/style/lyrics alignment.
+- Endpoint base runtime had older Transformers stack that could not load AF3 model classes.
 
-This makes iteration easier than relying only on subjective listening notes.
+Fix:
 
-## Incremental execution plan
+- Bootstrap runtime dependencies compatible with AF3 in custom handler/template.
+- Avoid relying on plain default endpoint image assumptions.
 
-Phase 1: Data and schema
+### 3) Processor load failures for HF-converted AF3 repo
 
-- Define the minimal `events` schema and annotation guidelines.
-- Build a small seed set (for example 50-200 clips) with high label quality.
+Observed error:
 
-Phase 2: Training and ablation
+- `Unrecognized processing class in nvidia/audio-flamingo-3-hf`
 
-- Train a baseline LoRA and an event-aware LoRA with matched settings.
-- Run ablations (with/without `events`, coarse vs fine event types).
+What caused it:
 
-Phase 3: Inference controls
+- Mismatch between model repo packaging and runtime loader expectations.
 
-- Add optional event-aware controls in the UI and endpoint payload.
-- Keep backward compatibility so existing prompts still work.
+Fix:
 
-Phase 4: Evaluation and docs
+- Move to NVIDIA stack template path and serving format that matches expected classes/runtime behavior.
 
-- Publish scorecard results + examples.
-- Document tradeoffs (quality, speed, annotation effort).
+### 4) Dependency conflicts after forced upgrades
 
-## Expected outcomes
+Observed logs showed conflicts around:
 
-If this works, this repo can evolve from "style-conditioned generation" toward "structure-aware generation":
+- `transformers`
+- `huggingface_hub`
+- `torch`/`torchaudio`/`torchvision`
+- `huggingface-inference-toolkit` pinned versions
 
-- More intentional song progression.
-- Stronger subgenre identity.
-- Better controllability for creators.
+What caused it:
 
-This is still a baseline research note, but it gives a clear technical direction that fits the current project architecture.
+- Upgrading one package in place inside endpoint image caused incompatibility with toolkit pins.
+
+Fix:
+
+- Use curated endpoint template/runtime setup instead of ad-hoc package upgrades.
+
+### 5) Token/auth confusion
+
+Observed warning:
+
+- Unauthenticated requests to HF Hub even though I had a token in `.env`.
+
+What caused it:
+
+- Variable name mismatch (`hf_token` vs expected runtime env var names like `HF_TOKEN`) in some contexts.
+
+Fix:
+
+- Normalize env variable names and pass token consistently in endpoint/runtime settings.
+
+### 6) Very short or repetitive analysis output
+
+What caused it:
+
+- Wrong stack path (HF-converted flow) and/or non-think-compatible runtime behavior.
+
+Fix:
+
+- Migrate to NVIDIA think-capable stack.
+- Use longer token budgets and think-oriented prompt settings.
+
+## Dataset run results and quality checks
+
+### Batch throughput I observed
+
+- 22 tracks processed in about 22 minutes.
+- Roughly 60 seconds per track average.
+
+### Repetition audit outcome
+
+- No exact duplicate full outputs across tracks.
+- But strong template reuse in phrasing and sentence structures.
+
+Interpretation:
+
+- The model output varied by track, but stylistically collapsed into repeated wording patterns.
+
+## JSON shaping decisions I made
+
+### Flattening for LoRA compatibility
+
+I flattened each sidecar to core fields used by `lora_train.py`:
+
+- `artist`, `caption`, `lyrics`, `bpm`, `keyscale`, `timesignature`, `vocal_language`, `duration`, `source`
+
+### Keeping rich detail without losing trainability
+
+I preserved detail under `source.rich_details` and then pushed high-value content into `caption` so training sees it.
+
+### Global normalization applied
+
+- `timesignature`: `"4"`
+- `vocal_language`: `"en"`
+- Captions prefixed with `Andrew Spacey:`
+
+## Important remaining data limitations
+
+Even after cleanup, these are still weak points in current sidecars:
+
+- `bpm` is mostly null
+- `keyscale` is mostly unknown/blank
+
+These are optional for training, but adding reliable BPM/key would likely improve control and consistency.
+
+## My current recommendation
+
+1. Keep NVIDIA stack as default for annotation generation quality.
+2. Keep core LoRA fields simple and valid.
+3. Keep rich details in `source.rich_details` for traceability.
+4. Keep detail-rich caption text for actual conditioning.
+5. Add a BPM/key estimation pass next if I want stronger metadata conditioning.
+
+## Next technical step I want
+
+I should run a structured event pass (`events` list with start/end/type/intensity) on a subset first, then test whether event-aware captions improve generated song structure over the current caption-only approach.

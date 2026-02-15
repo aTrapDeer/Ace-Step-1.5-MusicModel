@@ -5,6 +5,8 @@ Bootstrap this project into your own Hugging Face Space and/or Endpoint repo.
 Examples:
   python scripts/hf_clone.py space --repo-id your-name/ace-step-lora-studio
   python scripts/hf_clone.py endpoint --repo-id your-name/ace-step-endpoint
+  python scripts/hf_clone.py af3-endpoint --repo-id your-name/af3-caption-endpoint
+  python scripts/hf_clone.py af3-nvidia-endpoint --repo-id your-name/af3-nvidia-endpoint
   python scripts/hf_clone.py all --space-repo-id your-name/ace-step-lora-studio --endpoint-repo-id your-name/ace-step-endpoint
 """
 
@@ -172,10 +174,95 @@ def _stage_endpoint_snapshot(staging_dir: Path) -> tuple[int, int]:
     return copied, bytes_total
 
 
+def _iter_qwen_endpoint_template_paths() -> Iterable[tuple[Path, Path]]:
+    template_dir = PROJECT_ROOT / "templates" / "hf-qwen-caption-endpoint"
+    mapping = {
+        "handler.py": Path("handler.py"),
+        "requirements.txt": Path("requirements.txt"),
+        "README.md": Path("README.md"),
+    }
+    for src_name, dst_rel in mapping.items():
+        src = template_dir / src_name
+        if src.exists():
+            yield src, dst_rel
+
+
+def _stage_qwen_endpoint_snapshot(staging_dir: Path) -> tuple[int, int]:
+    copied = 0
+    bytes_total = 0
+    for src, rel_dst in _iter_qwen_endpoint_template_paths():
+        dst = staging_dir / rel_dst
+        _copy_file(src, dst)
+        copied += 1
+        bytes_total += src.stat().st_size
+    return copied, bytes_total
+
+
+def _iter_af3_endpoint_template_paths() -> Iterable[tuple[Path, Path]]:
+    template_dir = PROJECT_ROOT / "templates" / "hf-af3-caption-endpoint"
+    mapping = {
+        "handler.py": Path("handler.py"),
+        "requirements.txt": Path("requirements.txt"),
+        "README.md": Path("README.md"),
+    }
+    for src_name, dst_rel in mapping.items():
+        src = template_dir / src_name
+        if src.exists():
+            yield src, dst_rel
+
+
+def _stage_af3_endpoint_snapshot(staging_dir: Path) -> tuple[int, int]:
+    copied = 0
+    bytes_total = 0
+    for src, rel_dst in _iter_af3_endpoint_template_paths():
+        dst = staging_dir / rel_dst
+        _copy_file(src, dst)
+        copied += 1
+        bytes_total += src.stat().st_size
+    return copied, bytes_total
+
+
+def _iter_af3_nvidia_endpoint_template_paths() -> Iterable[tuple[Path, Path]]:
+    template_dir = PROJECT_ROOT / "templates" / "hf-af3-nvidia-endpoint"
+    mapping = {
+        "handler.py": Path("handler.py"),
+        "requirements.txt": Path("requirements.txt"),
+        "README.md": Path("README.md"),
+    }
+    for src_name, dst_rel in mapping.items():
+        src = template_dir / src_name
+        if src.exists():
+            yield src, dst_rel
+
+
+def _stage_af3_nvidia_endpoint_snapshot(staging_dir: Path) -> tuple[int, int]:
+    copied = 0
+    bytes_total = 0
+    for src, rel_dst in _iter_af3_nvidia_endpoint_template_paths():
+        dst = staging_dir / rel_dst
+        _copy_file(src, dst)
+        copied += 1
+        bytes_total += src.stat().st_size
+    return copied, bytes_total
+
+
 def _resolve_token(arg_token: str) -> str | None:
     if arg_token:
         return arg_token
-    return os.getenv("HF_TOKEN")
+    env_token = os.getenv("HF_TOKEN") or os.getenv("hf_token")
+    if env_token:
+        return env_token
+
+    dotenv = PROJECT_ROOT / ".env"
+    if dotenv.exists():
+        for raw in dotenv.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            if k.strip() in {"HF_TOKEN", "hf_token"}:
+                return v.strip().strip('"').strip("'")
+    return None
 
 
 def _ensure_repo(
@@ -266,6 +353,72 @@ def clone_endpoint(repo_id: str, private: bool, token: str | None, dry_run: bool
         print(f"[endpoint] uploaded to https://huggingface.co/{repo_id}")
 
 
+def clone_qwen_endpoint(repo_id: str, private: bool, token: str | None, dry_run: bool) -> None:
+    with tempfile.TemporaryDirectory(prefix="hf_qwen_endpoint_clone_") as tmp:
+        staging = Path(tmp)
+        copied, bytes_total = _stage_qwen_endpoint_snapshot(staging)
+        print(f"[qwen-endpoint] staged files: {copied}, size: {_fmt_mb(bytes_total)}")
+
+        if dry_run:
+            print("[qwen-endpoint] dry-run complete (nothing uploaded).")
+            return
+
+        api = HfApi(token=token)
+        _ensure_repo(api, repo_id=repo_id, repo_type="model", private=private)
+        _upload_snapshot(
+            api,
+            repo_id=repo_id,
+            repo_type="model",
+            folder_path=staging,
+            commit_message="Bootstrap Qwen2-Audio custom endpoint repo",
+        )
+        print(f"[qwen-endpoint] uploaded to https://huggingface.co/{repo_id}")
+
+
+def clone_af3_endpoint(repo_id: str, private: bool, token: str | None, dry_run: bool) -> None:
+    with tempfile.TemporaryDirectory(prefix="hf_af3_endpoint_clone_") as tmp:
+        staging = Path(tmp)
+        copied, bytes_total = _stage_af3_endpoint_snapshot(staging)
+        print(f"[af3-endpoint] staged files: {copied}, size: {_fmt_mb(bytes_total)}")
+
+        if dry_run:
+            print("[af3-endpoint] dry-run complete (nothing uploaded).")
+            return
+
+        api = HfApi(token=token)
+        _ensure_repo(api, repo_id=repo_id, repo_type="model", private=private)
+        _upload_snapshot(
+            api,
+            repo_id=repo_id,
+            repo_type="model",
+            folder_path=staging,
+            commit_message="Bootstrap Audio Flamingo 3 custom endpoint repo",
+        )
+        print(f"[af3-endpoint] uploaded to https://huggingface.co/{repo_id}")
+
+
+def clone_af3_nvidia_endpoint(repo_id: str, private: bool, token: str | None, dry_run: bool) -> None:
+    with tempfile.TemporaryDirectory(prefix="hf_af3_nvidia_endpoint_clone_") as tmp:
+        staging = Path(tmp)
+        copied, bytes_total = _stage_af3_nvidia_endpoint_snapshot(staging)
+        print(f"[af3-nvidia-endpoint] staged files: {copied}, size: {_fmt_mb(bytes_total)}")
+
+        if dry_run:
+            print("[af3-nvidia-endpoint] dry-run complete (nothing uploaded).")
+            return
+
+        api = HfApi(token=token)
+        _ensure_repo(api, repo_id=repo_id, repo_type="model", private=private)
+        _upload_snapshot(
+            api,
+            repo_id=repo_id,
+            repo_type="model",
+            folder_path=staging,
+            commit_message="Bootstrap Audio Flamingo 3 NVIDIA-stack endpoint repo",
+        )
+        print(f"[af3-nvidia-endpoint] uploaded to https://huggingface.co/{repo_id}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Clone this project into your own HF Space/Endpoint repos.")
     subparsers = parser.add_subparsers(dest="cmd", required=True)
@@ -281,6 +434,31 @@ def build_parser() -> argparse.ArgumentParser:
     p_endpoint.add_argument("--private", action="store_true", help="Create repo as private.")
     p_endpoint.add_argument("--token", type=str, default="", help="HF token (default: HF_TOKEN env var).")
     p_endpoint.add_argument("--dry-run", action="store_true", help="Stage files only; do not upload.")
+
+    p_qwen_endpoint = subparsers.add_parser("qwen-endpoint", help="Create/update Qwen2-Audio custom endpoint repo.")
+    p_qwen_endpoint.add_argument("--repo-id", required=True, help="Target model repo id, e.g. username/my-qwen-endpoint.")
+    p_qwen_endpoint.add_argument("--private", action="store_true", help="Create repo as private.")
+    p_qwen_endpoint.add_argument("--token", type=str, default="", help="HF token (default: HF_TOKEN env var).")
+    p_qwen_endpoint.add_argument("--dry-run", action="store_true", help="Stage files only; do not upload.")
+
+    p_af3_endpoint = subparsers.add_parser("af3-endpoint", help="Create/update Audio Flamingo 3 custom endpoint repo.")
+    p_af3_endpoint.add_argument("--repo-id", required=True, help="Target model repo id, e.g. username/my-af3-endpoint.")
+    p_af3_endpoint.add_argument("--private", action="store_true", help="Create repo as private.")
+    p_af3_endpoint.add_argument("--token", type=str, default="", help="HF token (default: HF_TOKEN env var).")
+    p_af3_endpoint.add_argument("--dry-run", action="store_true", help="Stage files only; do not upload.")
+
+    p_af3_nvidia_endpoint = subparsers.add_parser(
+        "af3-nvidia-endpoint",
+        help="Create/update AF3 NVIDIA-stack (llava+stage35) endpoint repo.",
+    )
+    p_af3_nvidia_endpoint.add_argument(
+        "--repo-id",
+        required=True,
+        help="Target model repo id, e.g. username/my-af3-nvidia-endpoint.",
+    )
+    p_af3_nvidia_endpoint.add_argument("--private", action="store_true", help="Create repo as private.")
+    p_af3_nvidia_endpoint.add_argument("--token", type=str, default="", help="HF token (default: HF_TOKEN env var).")
+    p_af3_nvidia_endpoint.add_argument("--dry-run", action="store_true", help="Stage files only; do not upload.")
 
     p_all = subparsers.add_parser("all", help="Run both Space and Endpoint bootstrap.")
     p_all.add_argument("--space-repo-id", required=True, help="Target space repo id.")
@@ -305,6 +483,12 @@ def main() -> int:
         clone_space(args.repo_id, private=bool(args.private), token=token, dry_run=bool(args.dry_run))
     elif args.cmd == "endpoint":
         clone_endpoint(args.repo_id, private=bool(args.private), token=token, dry_run=bool(args.dry_run))
+    elif args.cmd == "qwen-endpoint":
+        clone_qwen_endpoint(args.repo_id, private=bool(args.private), token=token, dry_run=bool(args.dry_run))
+    elif args.cmd == "af3-endpoint":
+        clone_af3_endpoint(args.repo_id, private=bool(args.private), token=token, dry_run=bool(args.dry_run))
+    elif args.cmd == "af3-nvidia-endpoint":
+        clone_af3_nvidia_endpoint(args.repo_id, private=bool(args.private), token=token, dry_run=bool(args.dry_run))
     else:
         clone_space(args.space_repo_id, private=bool(args.space_private), token=token, dry_run=bool(args.dry_run))
         clone_endpoint(

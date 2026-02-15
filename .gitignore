@@ -17,6 +17,9 @@ htmlcov/
 build/
 dist/
 *.egg-info/
+node_modules/
+react-ui/node_modules/
+react-ui/dist/
 
 # Virtual environments
 .venv/
@@ -27,6 +30,7 @@ env/
 .cache/
 .huggingface/
 .gradio/
+.tmp_tf*/
 
 # Logs/temp
 *.log
@@ -37,6 +41,7 @@ env/
 # Model/data/runtime artifacts
 checkpoints/
 lora_output/
+qwen_annotations/
 outputs/
 artifacts/
 models/
@@ -64,3 +69,5 @@ Thumbs.db
 # Optional local working copies
 Lora-ace-step/
 song_summaries_llm*.md
+
+train-dataset/*

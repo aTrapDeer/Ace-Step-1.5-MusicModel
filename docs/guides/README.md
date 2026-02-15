@@ -3,3 +3,4 @@
 Additional step-by-step guides that are useful but not required for the core LoRA Studio flow.
 
 - `qwen2-audio-train.md`
+- `af3-chatgpt-pipeline.md`

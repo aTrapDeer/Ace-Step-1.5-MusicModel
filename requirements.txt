@@ -2,7 +2,7 @@ numpy
 soundfile
 torch
 torchaudio
-transformers>=4.53.0,<4.58.0
+transformers>=4.57.0,<4.58.0
 accelerate
 huggingface_hub
 diffusers
@@ -18,3 +18,8 @@ peft>=0.11.0
 gradio>=4.0.0
 pandas
 bitsandbytes
+fastapi
+uvicorn
+python-multipart
+openai
+python-dotenv

@@ -1,0 +1,6 @@
+torch
+torchaudio
+soundfile
+numpy
+transformers>=4.53.0,<4.58.0
+accelerate
