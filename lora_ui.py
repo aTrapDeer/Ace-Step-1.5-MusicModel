@@ -15,6 +15,8 @@ import random
 import threading
 import tempfile
 import time
+import shutil
+import zipfile
 from pathlib import Path
 from typing import List, Optional
 
@@ -68,6 +70,7 @@ _auto_label_cursor: int = 0
 audio_saver = AudioSaver(default_format="wav")
 IS_SPACE = bool(os.getenv("SPACE_ID"))
 DEFAULT_OUTPUT_DIR = "/data/lora_output" if IS_SPACE else "lora_output"
+DEFAULT_UPLOADED_ADAPTER_SUBDIR = "uploaded_adapters"
 
 if IS_SPACE:
     try:
@@ -520,6 +523,83 @@ def list_adapters(output_dir: str):
     return adapters if adapters else ["(none found)"]
 
 
+def _safe_adapter_name(name: str) -> str:
+    name = (name or "").strip()
+    if not name:
+        return f"adapter_{int(time.time())}"
+    out = []
+    for ch in name:
+        if ch.isalnum() or ch in ("-", "_", "."):
+            out.append(ch)
+        else:
+            out.append("_")
+    cleaned = "".join(out).strip("._")
+    return cleaned or f"adapter_{int(time.time())}"
+
+
+def _safe_extract_zip(zip_path: str, target_dir: Path) -> int:
+    extracted = 0
+    target_resolved = target_dir.resolve()
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for member in zf.infolist():
+            member_path = (target_dir / member.filename).resolve()
+            if not str(member_path).startswith(str(target_resolved)):
+                raise RuntimeError(f"Unsafe archive path detected: {member.filename}")
+        zf.extractall(target_dir)
+        extracted = len(zf.namelist())
+    return extracted
+
+
+def upload_adapter_files(uploaded_files: List[str], adapter_dir: str, adapter_name: str):
+    """Upload LoRA adapter files/zip and make them available in adapter dropdown."""
+    if not uploaded_files:
+        adapters = list_adapters(adapter_dir)
+        return "Please upload .zip or adapter files first.", gr.update(choices=adapters, value=adapters[0] if adapters else None)
+
+    root_dir = Path(adapter_dir or DEFAULT_OUTPUT_DIR)
+    target_root = root_dir / DEFAULT_UPLOADED_ADAPTER_SUBDIR
+    target_root.mkdir(parents=True, exist_ok=True)
+    target_dir = target_root / _safe_adapter_name(adapter_name)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    copied = 0
+    extracted = 0
+    try:
+        # If a single zip is uploaded, extract it; otherwise copy files directly.
+        if len(uploaded_files) == 1 and str(uploaded_files[0]).lower().endswith(".zip"):
+            zip_path = uploaded_files[0]
+            extracted = _safe_extract_zip(zip_path, target_dir)
+        else:
+            for src in uploaded_files:
+                src_path = Path(src)
+                if not src_path.exists():
+                    continue
+                dst = target_dir / src_path.name
+                shutil.copy2(src_path, dst)
+                copied += 1
+
+        found = sorted({str(p.parent) for p in target_dir.rglob("adapter_config.json")})
+        if not found:
+            adapters = list_adapters(str(root_dir))
+            return (
+                f"Uploaded to {target_dir}, but no adapter_config.json found. "
+                "Upload a valid LoRA adapter folder or zip.",
+                gr.update(choices=adapters, value=adapters[0] if adapters else None),
+            )
+
+        adapters = list_adapters(str(root_dir))
+        primary = found[0]
+        msg = (
+            f"Adapter upload complete. Copied {copied} file(s), extracted {extracted} archive entries. "
+            f"Detected {len(found)} adapter path(s). Primary: {primary}"
+        )
+        return msg, gr.update(choices=adapters, value=primary)
+    except Exception as exc:
+        logger.exception("Adapter upload failed")
+        adapters = list_adapters(str(root_dir))
+        return f"Adapter upload failed: {exc}", gr.update(choices=adapters, value=adapters[0] if adapters else None)
+
+
 @_gpu_callback
 def load_adapter(adapter_path: str):
     if not adapter_path or adapter_path == "(none found)":
@@ -900,6 +980,18 @@ def build_ui():
                     refresh_btn = gr.Button("Refresh List")
                 adapter_dd = gr.Dropdown(label="Select Adapter", choices=[])
                 with gr.Row():
+                    upload_adapter_files_input = gr.Files(
+                        label="Upload LoRA Adapter (.zip or adapter files)",
+                        file_count="multiple",
+                        file_types=[".zip", ".json", ".safetensors", ".bin", ".pt", ".pth"],
+                        type="filepath",
+                    )
+                    upload_adapter_name = gr.Textbox(
+                        label="Uploaded Adapter Name (optional)",
+                        placeholder="my-lora-adapter",
+                    )
+                    upload_adapter_btn = gr.Button("Upload Adapter")
+                with gr.Row():
                     load_btn = gr.Button("Load Adapter", variant="primary")
                     unload_btn = gr.Button("Unload Adapter")
                 adapter_status = gr.Textbox(label="Adapter Status", interactive=False)
@@ -909,6 +1001,12 @@ def build_ui():
                     return gr.update(choices=adapters, value=adapters[0] if adapters else None)
 
                 refresh_btn.click(_refresh, adapter_dir, adapter_dd, api_name="list_adapters")
+                upload_adapter_btn.click(
+                    upload_adapter_files,
+                    [upload_adapter_files_input, adapter_dir, upload_adapter_name],
+                    [adapter_status, adapter_dd],
+                    api_name="upload_adapter_files",
+                )
                 load_btn.click(load_adapter, adapter_dd, adapter_status, api_name="load_adapter")
                 unload_btn.click(unload_adapter, outputs=adapter_status, api_name="unload_adapter")
 

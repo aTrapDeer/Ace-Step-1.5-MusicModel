@@ -107,6 +107,8 @@ Then in UI:
 
 - Use the endpoint scripts in `scripts/endpoint/`.
 - Or test through the Gradio UI flow.
+- In **Step 4 - Evaluate**, you can now upload your own LoRA adapter (`.zip` or adapter files),
+  then load it without retraining in this Space.
 
 ## AF3 GUI one-command startup
 
