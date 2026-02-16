@@ -173,6 +173,21 @@ def _init_model_impl(**kwargs):
     return handler.initialize_service(**kwargs)
 
 
+def _ensure_model_ready_for_eval() -> tuple[bool, str]:
+    """Ensure the base model is initialized before adapter load/generation callbacks."""
+    global _model_init_ok, _model_init_status
+    if handler.model is not None:
+        return True, ""
+    if _model_init_ok and _last_model_init_args:
+        status, ok = _init_model_impl(**_last_model_init_args)
+        _model_init_ok = bool(ok)
+        _model_init_status = status or ""
+        if ok:
+            return True, "Model reloaded for this session."
+        return False, f"Model reload failed:\n{status}"
+    return False, "Model not initialized. Please initialize model in Step 1 first."
+
+
 # ===========================================================================
 # Tab 2 - Dataset
 # ===========================================================================
@@ -646,11 +661,20 @@ def upload_adapter_files(uploaded_files: List[str], adapter_dir: str, adapter_na
 def load_adapter(adapter_path: str):
     if not adapter_path or adapter_path == "(none found)":
         return "Select a valid adapter path."
-    return handler.load_lora(adapter_path)
+    ok, msg = _ensure_model_ready_for_eval()
+    if not ok:
+        return msg
+    status = handler.load_lora(adapter_path)
+    if msg:
+        return f"{msg}\n{status}"
+    return status
 
 
 @_gpu_callback
 def unload_adapter():
+    ok, msg = _ensure_model_ready_for_eval()
+    if not ok:
+        return msg
     return handler.unload_lora()
 
 
@@ -671,8 +695,9 @@ def generate_sample(
     lora_scale: float,
 ):
     """Generate a single audio sample for evaluation."""
-    if handler.model is None:
-        return None, "Model not initialised."
+    ok, msg = _ensure_model_ready_for_eval()
+    if not ok:
+        return None, msg
 
     # Toggle LoRA if loaded
     if handler.lora_loaded:
