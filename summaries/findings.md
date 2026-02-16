@@ -191,13 +191,29 @@ Even after cleanup, these are still weak points in current sidecars:
 
 These are optional for training, but adding reliable BPM/key would likely improve control and consistency.
 
+## Lyric conditioning finding (important)
+
+I needed to document what I observed around lyrics and artist similarity:
+
+- In my tests, generations could still sound fairly close to Andrew Spacey when I prompted with lyrics from songs in my catalog, even when lyric fields in training data were incomplete.
+- My interpretation is that the model + LoRA already learned part of the vocal timbre, cadence, and arrangement style from audio/caption conditioning, so familiar lyric patterns still anchored output.
+- But this was inconsistent when I switched to fully new lyrics. Similarity dropped more often, especially in phrasing and hook behavior.
+
+What this means for my dataset strategy:
+
+- I should include lyrics in sidecar JSON for vocal tracks whenever possible.
+- I should keep lyric formatting consistent (`[Verse]`, `[Chorus]`, etc.) so the text-conditioning path is stable.
+- For instrumentals, I should use a consistent marker such as `[Instrumental]`.
+- Captions still carry major weight, but caption + lyrics together give me the best chance at stable artist-like generations with new text.
+
 ## My current recommendation
 
 1. Keep NVIDIA stack as default for annotation generation quality.
 2. Keep core LoRA fields simple and valid.
 3. Keep rich details in `source.rich_details` for traceability.
 4. Keep detail-rich caption text for actual conditioning.
-5. Add a BPM/key estimation pass next if I want stronger metadata conditioning.
+5. Fill lyric fields for all vocal songs and keep lyric structure consistent.
+6. Add a BPM/key estimation pass next if I want stronger metadata conditioning.
 
 ## Next technical step I want
 
