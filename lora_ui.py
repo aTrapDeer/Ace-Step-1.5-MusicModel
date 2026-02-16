@@ -69,8 +69,46 @@ _auto_label_cursor: int = 0
 
 audio_saver = AudioSaver(default_format="wav")
 IS_SPACE = bool(os.getenv("SPACE_ID"))
-DEFAULT_OUTPUT_DIR = "/data/lora_output" if IS_SPACE else "lora_output"
 DEFAULT_UPLOADED_ADAPTER_SUBDIR = "uploaded_adapters"
+
+
+def _resolve_writable_output_dir(preferred_dir: Optional[str] = None) -> Path:
+    """Resolve a writable output directory for training artifacts and uploaded adapters."""
+    candidates: List[Path] = []
+    if preferred_dir:
+        candidates.append(Path(preferred_dir))
+    env_output = os.getenv("LORA_OUTPUT_DIR")
+    if env_output:
+        candidates.append(Path(env_output))
+    if IS_SPACE:
+        candidates.extend([
+            Path("/data/lora_output"),
+            Path("/tmp/lora_output"),
+            Path(PROJECT_ROOT) / "lora_output",
+        ])
+    else:
+        candidates.append(Path("lora_output"))
+
+    checked = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in checked:
+            continue
+        checked.add(key)
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            if os.access(candidate, os.W_OK):
+                return candidate
+        except Exception:
+            continue
+
+    # Final fallback in the current working tree.
+    fallback = Path(PROJECT_ROOT) / "lora_output"
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
+
+
+DEFAULT_OUTPUT_DIR = str(_resolve_writable_output_dir())
 
 if IS_SPACE:
     try:
@@ -519,7 +557,11 @@ def poll_training():
 # ===========================================================================
 
 def list_adapters(output_dir: str):
-    adapters = LoRATrainer.list_adapters(output_dir)
+    try:
+        resolved_output = _resolve_writable_output_dir(output_dir)
+    except Exception:
+        return ["(none found)"]
+    adapters = LoRATrainer.list_adapters(str(resolved_output))
     return adapters if adapters else ["(none found)"]
 
 
@@ -556,7 +598,7 @@ def upload_adapter_files(uploaded_files: List[str], adapter_dir: str, adapter_na
         adapters = list_adapters(adapter_dir)
         return "Please upload .zip or adapter files first.", gr.update(choices=adapters, value=adapters[0] if adapters else None)
 
-    root_dir = Path(adapter_dir or DEFAULT_OUTPUT_DIR)
+    root_dir = _resolve_writable_output_dir(adapter_dir or DEFAULT_OUTPUT_DIR)
     target_root = root_dir / DEFAULT_UPLOADED_ADAPTER_SUBDIR
     target_root.mkdir(parents=True, exist_ok=True)
     target_dir = target_root / _safe_adapter_name(adapter_name)
