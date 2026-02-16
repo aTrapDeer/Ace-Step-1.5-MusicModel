@@ -1,8 +1,8 @@
----
+﻿---
 title: ACE-Step 1.5 LoRA Studio
-emoji: music
+emoji: 🎵
 colorFrom: blue
-colorTo: teal
+colorTo: indigo
 sdk: gradio
 app_file: app.py
 pinned: false
@@ -410,3 +410,4 @@ git commit -m "Consolidate AF3/Qwen pipelines, endpoint templates, and docs"
 ```bash
 git push github main
 ```
+
