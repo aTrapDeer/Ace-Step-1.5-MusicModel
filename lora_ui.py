@@ -71,6 +71,7 @@ _last_loaded_adapter_path: Optional[str] = None
 audio_saver = AudioSaver(default_format="wav")
 IS_SPACE = bool(os.getenv("SPACE_ID"))
 DEFAULT_UPLOADED_ADAPTER_SUBDIR = "uploaded_adapters"
+LAST_ADAPTER_STATE_FILE = ".last_loaded_adapter_path.txt"
 
 
 def _resolve_writable_output_dir(preferred_dir: Optional[str] = None) -> Path:
@@ -110,6 +111,34 @@ def _resolve_writable_output_dir(preferred_dir: Optional[str] = None) -> Path:
 
 
 DEFAULT_OUTPUT_DIR = str(_resolve_writable_output_dir())
+
+
+def _last_adapter_state_file(output_dir: Optional[str] = None) -> Path:
+    root = _resolve_writable_output_dir(output_dir or DEFAULT_OUTPUT_DIR)
+    return root / LAST_ADAPTER_STATE_FILE
+
+
+def _save_last_loaded_adapter_path(adapter_path: Optional[str], output_dir: Optional[str] = None) -> None:
+    state_file = _last_adapter_state_file(output_dir)
+    if adapter_path:
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(adapter_path.strip(), encoding="utf-8")
+    else:
+        if state_file.exists():
+            state_file.unlink()
+
+
+def _load_last_loaded_adapter_path(output_dir: Optional[str] = None) -> Optional[str]:
+    state_file = _last_adapter_state_file(output_dir)
+    if not state_file.exists():
+        return None
+    try:
+        path = state_file.read_text(encoding="utf-8").strip()
+    except Exception:
+        return None
+    if path and os.path.exists(path):
+        return path
+    return None
 
 if IS_SPACE:
     try:
@@ -201,9 +230,12 @@ def _ensure_lora_ready_for_eval(use_lora: bool) -> tuple[bool, str]:
         return True, ""
     if handler.lora_loaded:
         return True, ""
+    if not _last_loaded_adapter_path:
+        _last_loaded_adapter_path = _load_last_loaded_adapter_path()
     if _last_loaded_adapter_path and os.path.exists(_last_loaded_adapter_path):
         status = handler.load_lora(_last_loaded_adapter_path)
         if _looks_like_lora_loaded(status):
+            _save_last_loaded_adapter_path(_last_loaded_adapter_path)
             return True, f"LoRA reloaded for this session from {_last_loaded_adapter_path}."
         return False, f"LoRA reload failed:\n{status}"
     return False, "LoRA requested but no adapter is loaded in this session. Click 'Load Adapter' first."
@@ -689,6 +721,7 @@ def load_adapter(adapter_path: str):
     status = handler.load_lora(adapter_path)
     if _looks_like_lora_loaded(status):
         _last_loaded_adapter_path = adapter_path
+        _save_last_loaded_adapter_path(adapter_path)
     if msg:
         return f"{msg}\n{status}"
     return status
@@ -703,6 +736,7 @@ def unload_adapter():
     status = handler.unload_lora()
     if "unloaded" in (status or "").strip().lower():
         _last_loaded_adapter_path = None
+        _save_last_loaded_adapter_path(None)
     return status
 
 
@@ -804,6 +838,8 @@ def ab_test(
 
 def get_workflow_status():
     global _last_loaded_adapter_path
+    if not _last_loaded_adapter_path:
+        _last_loaded_adapter_path = _load_last_loaded_adapter_path()
     model_is_ready = (handler.model is not None) or _model_init_ok
     model_ready = "Ready" if model_is_ready else "Not initialized"
     tracks = len(dataset_entries)
