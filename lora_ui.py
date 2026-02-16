@@ -66,6 +66,7 @@ _last_model_init_args: Optional[dict] = None
 _lm_init_ok: bool = False
 _last_lm_init_args: Optional[dict] = None
 _auto_label_cursor: int = 0
+_last_loaded_adapter_path: Optional[str] = None
 
 audio_saver = AudioSaver(default_format="wav")
 IS_SPACE = bool(os.getenv("SPACE_ID"))
@@ -186,6 +187,26 @@ def _ensure_model_ready_for_eval() -> tuple[bool, str]:
             return True, "Model reloaded for this session."
         return False, f"Model reload failed:\n{status}"
     return False, "Model not initialized. Please initialize model in Step 1 first."
+
+
+def _looks_like_lora_loaded(status: str) -> bool:
+    s = (status or "").strip().lower()
+    return ("lora loaded from" in s) or s.startswith("✅")
+
+
+def _ensure_lora_ready_for_eval(use_lora: bool) -> tuple[bool, str]:
+    """Ensure requested LoRA state is available in current callback context."""
+    global _last_loaded_adapter_path
+    if not use_lora:
+        return True, ""
+    if handler.lora_loaded:
+        return True, ""
+    if _last_loaded_adapter_path and os.path.exists(_last_loaded_adapter_path):
+        status = handler.load_lora(_last_loaded_adapter_path)
+        if _looks_like_lora_loaded(status):
+            return True, f"LoRA reloaded for this session from {_last_loaded_adapter_path}."
+        return False, f"LoRA reload failed:\n{status}"
+    return False, "LoRA requested but no adapter is loaded in this session. Click 'Load Adapter' first."
 
 
 # ===========================================================================
@@ -659,12 +680,15 @@ def upload_adapter_files(uploaded_files: List[str], adapter_dir: str, adapter_na
 
 @_gpu_callback
 def load_adapter(adapter_path: str):
+    global _last_loaded_adapter_path
     if not adapter_path or adapter_path == "(none found)":
         return "Select a valid adapter path."
     ok, msg = _ensure_model_ready_for_eval()
     if not ok:
         return msg
     status = handler.load_lora(adapter_path)
+    if _looks_like_lora_loaded(status):
+        _last_loaded_adapter_path = adapter_path
     if msg:
         return f"{msg}\n{status}"
     return status
@@ -672,10 +696,14 @@ def load_adapter(adapter_path: str):
 
 @_gpu_callback
 def unload_adapter():
+    global _last_loaded_adapter_path
     ok, msg = _ensure_model_ready_for_eval()
     if not ok:
         return msg
-    return handler.unload_lora()
+    status = handler.unload_lora()
+    if "unloaded" in (status or "").strip().lower():
+        _last_loaded_adapter_path = None
+    return status
 
 
 def set_lora_scale(scale: float):
@@ -698,6 +726,9 @@ def generate_sample(
     ok, msg = _ensure_model_ready_for_eval()
     if not ok:
         return None, msg
+    ok_lora, lora_msg = _ensure_lora_ready_for_eval(use_lora)
+    if not ok_lora:
+        return None, lora_msg
 
     # Toggle LoRA if loaded
     if handler.lora_loaded:
@@ -739,7 +770,9 @@ def generate_sample(
 
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     audio_saver.save_audio(wav_tensor, tmp.name, sample_rate=sr)
-    return tmp.name, f"Generated successfully, seed={actual_seed}."
+    session_msgs = [m for m in (msg, lora_msg) if m]
+    prefix = ("\n".join(session_msgs) + "\n") if session_msgs else ""
+    return tmp.name, f"{prefix}Generated successfully, seed={actual_seed}."
 
 
 @_gpu_callback
@@ -770,6 +803,7 @@ def ab_test(
 # ===========================================================================
 
 def get_workflow_status():
+    global _last_loaded_adapter_path
     model_is_ready = (handler.model is not None) or _model_init_ok
     model_ready = "Ready" if model_is_ready else "Not initialized"
     tracks = len(dataset_entries)
@@ -778,13 +812,18 @@ def get_workflow_status():
     init_note = ""
     if IS_SPACE and _model_init_ok and handler.model is None:
         init_note = " (Zero GPU callback context)"
+    adapter_hint = _last_loaded_adapter_path or "(none)"
+    lora_loaded_text = str(lora_status.get('loaded', False))
+    if IS_SPACE and handler.model is None and _last_loaded_adapter_path:
+        lora_loaded_text = "Session-pending (auto-reload on eval)"
     return (
         f"Model: {model_ready}{init_note}\n"
         f"Tracks Loaded: {tracks}\n"
         f"Training: {training_state}\n"
-        f"LoRA Loaded: {lora_status.get('loaded', False)}\n"
+        f"LoRA Loaded: {lora_loaded_text}\n"
         f"LoRA Active: {lora_status.get('active', False)}\n"
-        f"LoRA Scale: {lora_status.get('scale', 1.0)}"
+        f"LoRA Scale: {lora_status.get('scale', 1.0)}\n"
+        f"Last Adapter Path: {adapter_hint}"
     )
 
 
@@ -1074,8 +1113,10 @@ def build_ui():
                     [adapter_status, adapter_dd],
                     api_name="upload_adapter_files",
                 )
-                load_btn.click(load_adapter, adapter_dd, adapter_status, api_name="load_adapter")
-                unload_btn.click(unload_adapter, outputs=adapter_status, api_name="unload_adapter")
+                load_evt = load_btn.click(load_adapter, adapter_dd, adapter_status, api_name="load_adapter")
+                load_evt.then(get_workflow_status, outputs=workflow_status)
+                unload_evt = unload_btn.click(unload_adapter, outputs=adapter_status, api_name="unload_adapter")
+                unload_evt.then(get_workflow_status, outputs=workflow_status)
 
             with gr.Accordion("Generation Settings", open=True):
                 with gr.Row():
